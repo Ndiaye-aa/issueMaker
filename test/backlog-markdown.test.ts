@@ -6,6 +6,7 @@ const items: BacklogItem[] = [
     id: 'BL-001',
     epic: 'Autenticação',
     type: 'bug',
+    priority: 'must',
     title: 'Corrigir erro 500 no login com senha expirada',
     description: 'O login retorna erro 500 em vez de uma mensagem clara.',
     expectedBehavior: 'Deve retornar 401 com mensagem "senha expirada".',
@@ -21,6 +22,7 @@ const items: BacklogItem[] = [
     id: 'BL-002',
     epic: 'Relatórios',
     type: 'feature',
+    priority: 'could',
     title: 'Exportar relatório de vendas em PDF',
     description: 'Permitir que o usuário exporte o relatório de vendas em PDF.',
     expectedBehavior: 'Um PDF é gerado e baixado ao clicar em "Exportar".',
@@ -58,5 +60,16 @@ describe('backlog markdown round-trip', () => {
   it('omite a linha de rastreabilidade quando não há requisitos associados', () => {
     const markdown = renderBacklogMarkdown([items[1]!]);
     expect(markdown).not.toContain('**Rastreabilidade:**');
+  });
+
+  it('inclui a linha de prioridade', () => {
+    const markdown = renderBacklogMarkdown([items[0]!]);
+    expect(markdown).toContain('**Prioridade:** must');
+  });
+
+  it('assume prioridade "should" ao fazer parse de um backlog antigo sem a linha de prioridade', () => {
+    const markdown = renderBacklogMarkdown([items[1]!]).replace('**Prioridade:** could\n', '');
+    const [parsed] = parseBacklogMarkdown(markdown);
+    expect(parsed?.priority).toBe('should');
   });
 });

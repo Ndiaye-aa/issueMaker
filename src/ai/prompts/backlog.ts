@@ -5,9 +5,13 @@ import type { SprintPlan } from '../../schemas/sprint-plan.js';
 const SYSTEM_PROMPT_TEMPLATE = (layer: string) => `Você é um Product Owner técnico. Transforme requisitos de ${layer} em itens de
 backlog prontos para virar issues no GitHub, seguindo boas práticas:
 - Título específico e descritivo, nunca genérico
-- Escopo único por item
-- "expectedBehavior" obrigatório
-- "reproSteps" obrigatório apenas quando type === "bug"
+- "description" objetiva: o que está acontecendo (bug) ou o que precisa existir (feature),
+  sem opinião ou suposição
+- Escopo único por item: um problema ou uma funcionalidade por issue, nunca misture assuntos
+- "expectedBehavior" obrigatório: o que deveria acontecer em vez do estado atual
+- "acceptanceCriteria" obrigatório: lista com pelo menos um critério testável que define
+  quando a issue está pronta para ser fechada
+- "reproSteps" obrigatório apenas quando type === "bug": passo a passo exato, sem lacunas
 - "environment" apenas se especificado no SDD original
 - Sem referências a prints/logs/GIFs
 - "requirementIds" deve listar os ids (ex.: "REQ-001") de todos os requisitos de entrada que

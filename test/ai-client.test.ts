@@ -81,4 +81,20 @@ describe('ResilientAIClient', () => {
 
     await expect(client.complete(makeRequest(), schema)).rejects.toBeInstanceOf(RateLimitError);
   });
+
+  it('cai no fallback imediatamente quando o retry-after do provedor principal é longo demais', async () => {
+    const primary = new FakeProvider('primary', [
+      new RateLimitError('rate limit', 715_000),
+    ]);
+    const fallback = new FakeProvider('fallback', [{ value: 9 }]);
+    const client = new ResilientAIClient(primary, fallback, 3, 2);
+
+    const start = Date.now();
+    const result = await client.complete(makeRequest(), schema);
+
+    expect(result).toEqual({ value: 9 });
+    expect(primary.calls).toBe(1);
+    expect(fallback.calls).toBe(1);
+    expect(Date.now() - start).toBeLessThan(1_000);
+  });
 });

@@ -8,7 +8,8 @@ export function createResilientAIClient(): ResilientAIClient {
     throw new Error('GROQ_API_KEY não definida. Configure o arquivo .env (ver .env.example).');
   }
 
-  const primary = new GroqProvider({ apiKey: groqApiKey });
+  const groqModel = process.env.GROQ_MODEL;
+  const primary = new GroqProvider({ apiKey: groqApiKey, ...(groqModel ? { model: groqModel } : {}) });
   const ollamaBaseURL = process.env.OLLAMA_BASE_URL;
   const fallback = new OllamaProvider(ollamaBaseURL ? { baseURL: ollamaBaseURL } : {});
   return new ResilientAIClient(primary, fallback);

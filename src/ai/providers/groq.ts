@@ -19,7 +19,7 @@ export class GroqProvider implements AIProvider {
       apiKey: options.apiKey,
       baseURL: options.baseURL ?? 'https://api.groq.com/openai/v1',
     });
-    this.model = options.model ?? 'llama-3.3-70b-versatile';
+    this.model = options.model ?? 'openai/gpt-oss-120b';
   }
 
   async complete<T>(request: CompletionRequest, _schema: ZodType<T>): Promise<unknown> {
@@ -27,19 +27,29 @@ export class GroqProvider implements AIProvider {
       const response = await this.client.chat.completions.create({
         model: this.model,
         temperature: request.temperature ?? 0.2,
+        max_tokens: 6000,
         messages: [
           { role: 'system', content: request.systemPrompt },
           { role: 'user', content: request.userPrompt },
         ],
       });
-      const content = response.choices[0]?.message?.content;
+      const choice = response.choices[0];
+      const content = choice?.message?.content;
       if (!content) {
         throw new Error('resposta vazia do provedor Groq');
+      }
+      if (choice.finish_reason === 'length') {
+        throw new Error(
+          'resposta do provedor Groq foi cortada por limite de tokens antes de terminar o JSON',
+        );
       }
       return parseJsonResponse(content);
     } catch (err) {
       if (isOpenAIRateLimitError(err)) {
-        throw new RateLimitError('Groq retornou HTTP 429');
+        throw new RateLimitError(
+          `Groq retornou rate limit (HTTP ${(err as { status?: number }).status})`,
+          getRetryAfterMs(err),
+        );
       }
       throw err;
     }
@@ -47,10 +57,18 @@ export class GroqProvider implements AIProvider {
 }
 
 function isOpenAIRateLimitError(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'status' in err &&
-    (err as { status?: number }).status === 429
-  );
+  if (typeof err !== 'object' || err === null) return false;
+  const status = (err as { status?: number }).status;
+  const code = (err as { code?: string }).code;
+  // A Groq também retorna 413 (não só 429) quando o request excede o orçamento
+  // de tokens-por-minuto do plano — ambos são, na prática, rate limiting.
+  return status === 429 || code === 'rate_limit_exceeded';
+}
+
+function getRetryAfterMs(err: unknown): number | undefined {
+  const headers = (err as { headers?: Record<string, string> }).headers;
+  const retryAfter = headers?.['retry-after'];
+  if (!retryAfter) return undefined;
+  const seconds = Number(retryAfter);
+  return Number.isFinite(seconds) ? seconds * 1000 : undefined;
 }

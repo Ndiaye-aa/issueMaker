@@ -1,5 +1,6 @@
 import type { BacklogItem } from '../schemas/backlog-item.js';
 import type { GithubIssueRef } from './github.js';
+import { normalizeLabelName } from './labels.js';
 
 export const SDD_BOT_LABEL = 'sdd-bot';
 
@@ -7,7 +8,8 @@ export interface GithubPublisherLike {
   listOpenIssuesWithLabel(label: string): Promise<GithubIssueRef[]>;
   ensureLabelsExist(labels: string[]): Promise<void>;
   closeIssue(issueNumber: number): Promise<void>;
-  createIssue(item: BacklogItem, labels: string[]): Promise<number>;
+  ensureMilestonesExist(sprintNumbers: number[]): Promise<Map<number, number>>;
+  createIssue(item: BacklogItem, labels: string[], milestoneNumber?: number): Promise<number>;
 }
 
 export interface PublishOptions {
@@ -27,7 +29,16 @@ export interface PublishResult {
 }
 
 export function labelsForItem(item: BacklogItem): string[] {
-  return [...new Set([...item.labels, SDD_BOT_LABEL, `sprint-${item.sprint}`])];
+  const rawLabels = [
+    ...item.labels,
+    SDD_BOT_LABEL,
+    `sprint-${item.sprint}`,
+    item.type,
+    item.layer,
+    item.epic,
+    `priority-${item.priority}`,
+  ];
+  return [...new Set(rawLabels.map(normalizeLabelName))].filter((label) => label.length > 0);
 }
 
 export async function publishBacklog(
@@ -66,12 +77,18 @@ export async function publishBacklog(
     await publisher.ensureLabelsExist(allLabels);
   }
 
+  const sprintNumbers = [...new Set(itemsToCreate.map((item) => item.sprint))];
+  let milestoneBySprint = new Map<number, number>();
+  if (!options.dryRun && sprintNumbers.length > 0) {
+    milestoneBySprint = await publisher.ensureMilestonesExist(sprintNumbers);
+  }
+
   for (const item of itemsToCreate) {
     const labels = labelsForItem(item);
     if (options.dryRun) {
       result.created.push({ title: item.title });
     } else {
-      const number = await publisher.createIssue(item, labels);
+      const number = await publisher.createIssue(item, labels, milestoneBySprint.get(item.sprint));
       result.created.push({ number, title: item.title });
     }
   }

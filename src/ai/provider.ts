@@ -12,7 +12,10 @@ export interface AIProvider {
 }
 
 export class RateLimitError extends Error {
-  constructor(message = 'rate limit exceeded') {
+  constructor(
+    message = 'rate limit exceeded',
+    readonly retryAfterMs?: number,
+  ) {
     super(message);
     this.name = 'RateLimitError';
   }

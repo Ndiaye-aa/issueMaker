@@ -288,12 +288,19 @@ Ver Apêndice A.3. Uma chamada por camada (frontend/backend), recebendo os requi
 
 | Comando | Descrição |
 |---|---|
-| `sdd-bot analyze --file <path> --out <path>` | Ingest + extração → `requirements.json` |
-| `sdd-bot plan --in <requirements.json> --sprint-length <duração> --out <path>` | Planejamento → `sprint-plan.json` |
-| `sdd-bot backlog --in <requirements.json> --plan <sprint-plan.json> --out <dir>` | Geração → `backlog-frontend.md` + `backlog-backend.md` |
-| `sdd-bot publish --backlog <path> --repo <org/repo> [--mode add\|replace] [--dry-run]` | Publicação de issues |
+| `sdd-bot process --file <sdd> --sprint-length <duração> [--out <dir>]` | Pipeline completo (analyze + plan + backlog) → `backlog-frontend.md` + `backlog-backend.md` |
+| `sdd-bot publish --backlog <path> --repo <org/repo> [--mode add\|replace] [--dry-run]` | Publicação de issues (`--mode replace` é o padrão) |
+| `sdd-bot analyze --file <path> [--out <path>]` | (granular) Ingest + extração → `requirements.json` |
+| `sdd-bot plan --in <requirements.json> --sprint-length <duração> [--out <path>]` | (granular) Planejamento → `sprint-plan.json` |
+| `sdd-bot backlog --in <requirements.json> --plan <sprint-plan.json> [--out <dir>]` | (granular) Geração → `backlog-frontend.md` + `backlog-backend.md` |
+
+Todo `--out` é opcional e, se omitido, aponta para `./out` (criado automaticamente).
 
 Implementado com `commander`, cada comando isolado em seu próprio módulo dentro de `src/cli/`.
+`process` compõe, no mesmo módulo, as chamadas às funções já usadas por `analyze`/`plan`/
+`backlog` (nenhuma etapa é pulada ou duplicada), mas sem persistir os artefatos intermediários
+`requirements.json`/`sprint-plan.json` em disco. Os comandos granulares continuam disponíveis
+para quem quiser inspecionar ou editar esses artefatos manualmente entre etapas.
 
 ---
 

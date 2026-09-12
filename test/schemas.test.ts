@@ -38,6 +38,7 @@ describe('BacklogItemSchema', () => {
     sprint: 1,
     layer: 'backend' as const,
     requirementIds: ['REQ-001'],
+    priority: 'must' as const,
   };
 
   it('exige reproSteps quando type === bug', () => {
@@ -57,5 +58,31 @@ describe('BacklogItemSchema', () => {
   it('não exige reproSteps para features', () => {
     const result = BacklogItemSchema.safeParse({ ...base, type: 'feature' });
     expect(result.success).toBe(true);
+  });
+
+  it('rejeita título genérico/curto demais', () => {
+    const result = BacklogItemSchema.safeParse({ ...base, type: 'feature', title: 'Erro' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejeita description vaga/curta demais', () => {
+    const result = BacklogItemSchema.safeParse({ ...base, type: 'feature', description: 'Ruim' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejeita acceptanceCriteria vazio', () => {
+    const result = BacklogItemSchema.safeParse({ ...base, type: 'feature', acceptanceCriteria: [] });
+    expect(result.success).toBe(false);
+  });
+
+  it('exige priority', () => {
+    const { priority: _priority, ...withoutPriority } = base;
+    const result = BacklogItemSchema.safeParse({ ...withoutPriority, type: 'feature' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejeita priority fora do enum', () => {
+    const result = BacklogItemSchema.safeParse({ ...base, type: 'feature', priority: 'urgent' });
+    expect(result.success).toBe(false);
   });
 });

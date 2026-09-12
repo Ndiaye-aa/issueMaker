@@ -50,7 +50,7 @@ export function chunkByTokenLimit(chunk: Chunk, maxTokens: number): Chunk[] {
   return parts;
 }
 
-export function chunkDocument(text: string, maxTokensPerChunk = 2000): Chunk[] {
+export function chunkDocument(text: string, maxTokensPerChunk = 1000): Chunk[] {
   const sections = splitIntoSections(text);
   return sections.flatMap((section) => chunkByTokenLimit(section, maxTokensPerChunk));
 }

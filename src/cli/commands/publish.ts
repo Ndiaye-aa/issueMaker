@@ -16,7 +16,7 @@ export function registerPublishCommand(program: Command): void {
     .description('Publica itens de backlog (já revisados) como issues em um repositório GitHub')
     .requiredOption('--backlog <path>', 'caminho do arquivo de backlog em Markdown')
     .requiredOption('--repo <org/repo>', 'repositório GitHub de destino')
-    .option('--mode <add|replace>', 'modo de publicação', 'add')
+    .option('--mode <add|replace>', 'modo de publicação', 'replace')
     .option('--dry-run', 'exibe o resultado sem chamar a API de escrita', false)
     .action(async (options: PublishCommandOptions) => {
       if (options.mode !== 'add' && options.mode !== 'replace') {

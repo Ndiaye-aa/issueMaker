@@ -1,6 +1,7 @@
 import { Octokit } from 'octokit';
 import type { BacklogItem } from '../schemas/backlog-item.js';
 import { renderBacklogItemMarkdown } from '../render/backlog-markdown.js';
+import { getLabelColor } from './labels.js';
 
 export interface GithubIssueRef {
   number: number;
@@ -43,6 +44,7 @@ export class GithubPublisher {
           owner: this.owner,
           repo: this.repo,
           name: label,
+          color: getLabelColor(label),
         });
       }
     }
@@ -57,13 +59,44 @@ export class GithubPublisher {
     });
   }
 
-  async createIssue(item: BacklogItem, labels: string[]): Promise<number> {
+  async ensureMilestonesExist(sprintNumbers: number[]): Promise<Map<number, number>> {
+    const existing = await this.octokit.rest.issues.listMilestones({
+      owner: this.owner,
+      repo: this.repo,
+      state: 'open',
+      per_page: 100,
+    });
+
+    const bySprint = new Map<number, number>();
+    for (const milestone of existing.data) {
+      const match = /^Sprint (\d+)$/.exec(milestone.title);
+      if (match?.[1]) {
+        bySprint.set(Number(match[1]), milestone.number);
+      }
+    }
+
+    for (const sprint of sprintNumbers) {
+      if (!bySprint.has(sprint)) {
+        const created = await this.octokit.rest.issues.createMilestone({
+          owner: this.owner,
+          repo: this.repo,
+          title: `Sprint ${sprint}`,
+        });
+        bySprint.set(sprint, created.data.number);
+      }
+    }
+
+    return bySprint;
+  }
+
+  async createIssue(item: BacklogItem, labels: string[], milestoneNumber?: number): Promise<number> {
     const response = await this.octokit.rest.issues.create({
       owner: this.owner,
       repo: this.repo,
       title: item.title,
       body: renderBacklogItemMarkdown(item),
       labels,
+      ...(milestoneNumber !== undefined ? { milestone: milestoneNumber } : {}),
     });
     return response.data.number;
   }

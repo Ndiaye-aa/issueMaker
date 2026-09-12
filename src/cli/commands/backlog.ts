@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Command } from 'commander';
 import { createResilientAIClient } from '../../ai/client-factory.js';
@@ -15,7 +15,7 @@ export function registerBacklogCommand(program: Command): void {
     )
     .requiredOption('--in <path>', 'caminho do requirements.json de entrada')
     .requiredOption('--plan <path>', 'caminho do sprint-plan.json de entrada')
-    .requiredOption('--out <dir>', 'diretório de saída para os arquivos de backlog')
+    .option('--out <dir>', 'diretório de saída para os arquivos de backlog', './out')
     .action(async (options: { in: string; plan: string; out: string }) => {
       const requirements = RequirementArraySchema.parse(
         JSON.parse(await readFile(options.in, 'utf-8')),
@@ -23,6 +23,7 @@ export function registerBacklogCommand(program: Command): void {
       const sprintPlan = SprintPlanSchema.parse(JSON.parse(await readFile(options.plan, 'utf-8')));
 
       const aiClient = createResilientAIClient();
+      await mkdir(options.out, { recursive: true });
 
       for (const layer of ['frontend', 'backend'] as const) {
         const items = await buildBacklogForLayer(layer, requirements, sprintPlan, aiClient);

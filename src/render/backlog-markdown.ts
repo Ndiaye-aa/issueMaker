@@ -19,6 +19,7 @@ export function renderBacklogItemMarkdown(item: BacklogItem): string {
   lines.push(`### [Sprint ${item.sprint}] ${item.title}`);
   lines.push(renderMetaComment(item));
   lines.push(`**Tipo:** ${item.type}`);
+  lines.push(`**Prioridade:** ${item.priority}`);
   lines.push(`**Labels:** ${item.labels.map((label) => `\`${label}\``).join(', ')}`);
   lines.push('');
   lines.push('**Descrição:**');
@@ -63,6 +64,7 @@ const HEADING_REGEX = /^### \[Sprint (\d+)\] (.+)$/m;
 const META_REGEX =
   /<!--\s*sdd-bot:meta\s+id="([^"]*)"\s+epic="([^"]*)"\s+layer="([^"]*)"\s+requirementIds="([^"]*)"\s*-->/;
 const TYPE_REGEX = /^\*\*Tipo:\*\*\s*(feature|bug|tech-debt)\s*$/m;
+const PRIORITY_REGEX = /^\*\*Prioridade:\*\*\s*(must|should|could)\s*$/m;
 const LABELS_REGEX = /^\*\*Labels:\*\*\s*(.*)$/m;
 const DESCRIPTION_REGEX = /\*\*Descrição:\*\*\n([\s\S]*?)\n\n/;
 const REPRO_STEPS_REGEX = /\*\*Passos para reproduzir:\*\*\n([\s\S]*?)\n\n/;
@@ -103,6 +105,9 @@ function parseBacklogItemBlock(block: string): BacklogItem {
   const typeMatch = block.match(TYPE_REGEX);
   const type = (typeMatch?.[1] ?? 'feature') as BacklogItem['type'];
 
+  const priorityMatch = block.match(PRIORITY_REGEX);
+  const priority = (priorityMatch?.[1] ?? 'should') as BacklogItem['priority'];
+
   const labelsMatch = block.match(LABELS_REGEX);
   const labels = (labelsMatch?.[1] ?? '')
     .split(',')
@@ -127,6 +132,7 @@ function parseBacklogItemBlock(block: string): BacklogItem {
     id: id ?? '',
     epic,
     type,
+    priority,
     title,
     description,
     expectedBehavior,

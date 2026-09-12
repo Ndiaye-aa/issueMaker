@@ -3,6 +3,13 @@ import { z } from 'zod';
 import type { AIProvider, CompletionRequest } from './provider.js';
 import { isRateLimitError } from './provider.js';
 
+/**
+ * Acima disso, o retry-after reportado pelo provedor reflete reset de cota (ex.: limite
+ * diário), não um throttle passageiro — não vale a pena bloquear o processo esperando;
+ * é melhor cair no fallback imediatamente.
+ */
+const MAX_AUTO_RETRY_WAIT_MS = 5_000;
+
 export class ResilientAIClient {
   constructor(
     private readonly primary: AIProvider,
@@ -36,7 +43,10 @@ export class ResilientAIClient {
         if (!isRateLimitError(err)) {
           throw err;
         }
-        await backoff(attempt);
+        if (err.retryAfterMs !== undefined && err.retryAfterMs > MAX_AUTO_RETRY_WAIT_MS) {
+          throw err;
+        }
+        await backoff(attempt, err.retryAfterMs);
       }
     }
     throw lastError;
@@ -74,7 +84,7 @@ function appendSchemaErrorToPrompt(request: CompletionRequest, err: unknown): Co
   };
 }
 
-function backoff(attempt: number): Promise<void> {
-  const delayMs = 2 ** attempt * 250;
+function backoff(attempt: number, retryAfterMs?: number): Promise<void> {
+  const delayMs = retryAfterMs ?? 2 ** attempt * 250;
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
