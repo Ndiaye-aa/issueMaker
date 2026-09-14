@@ -7,6 +7,7 @@ import { extractRequirements } from '../../ingest/extract-requirements.js';
 import { parseSddFile } from '../../ingest/parsers.js';
 import { buildSprintPlan } from '../../plan/build-sprint-plan.js';
 import { renderBacklogMarkdown } from '../../render/backlog-markdown.js';
+import { log } from '../logger.js';
 
 export function registerProcessCommand(program: Command): void {
   program
@@ -20,16 +21,19 @@ export function registerProcessCommand(program: Command): void {
     .action(async (options: { file: string; sprintLength: string; out: string }) => {
       const aiClient = createResilientAIClient();
 
+      log.step(`etapa 1/3: análise de ${options.file}`);
       const sddText = await parseSddFile(options.file);
       const requirements = await extractRequirements(sddText, aiClient);
       console.log(`${requirements.length} requisito(s) extraído(s)`);
 
+      log.step('etapa 2/3: planejamento de sprints');
       const sprintPlan = await buildSprintPlan(requirements, options.sprintLength, aiClient);
       console.log(`${sprintPlan.sprints.length} sprint(s) planejado(s)`);
 
       await mkdir(options.out, { recursive: true });
 
       for (const layer of ['frontend', 'backend'] as const) {
+        log.step(`etapa 3/3: backlog ${layer}`);
         const items = await buildBacklogForLayer(layer, requirements, sprintPlan, aiClient);
         const markdown = renderBacklogMarkdown(items);
         const outPath = join(options.out, `backlog-${layer}.md`);

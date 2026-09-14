@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import { z } from 'zod';
 import { ResilientAIClient } from '../src/ai/client.js';
 import { RateLimitError } from '../src/ai/provider.js';
@@ -65,7 +66,7 @@ describe('ResilientAIClient', () => {
       new RateLimitError(),
     ]);
     const fallback = new FakeProvider('fallback', [{ value: 7 }]);
-    const client = new ResilientAIClient(primary, fallback, 3, 2);
+    const client = new ResilientAIClient(primary, fallback, 3, 2, silentLog);
 
     const result = await client.complete(makeRequest(), schema);
 
@@ -77,7 +78,7 @@ describe('ResilientAIClient', () => {
   it('propaga o erro quando ambos os provedores falham totalmente', async () => {
     const primary = new FakeProvider('primary', [new RateLimitError(), new RateLimitError()]);
     const fallback = new FakeProvider('fallback', [new RateLimitError(), new RateLimitError()]);
-    const client = new ResilientAIClient(primary, fallback, 3, 2);
+    const client = new ResilientAIClient(primary, fallback, 3, 2, silentLog);
 
     await expect(client.complete(makeRequest(), schema)).rejects.toBeInstanceOf(RateLimitError);
   });
@@ -87,7 +88,7 @@ describe('ResilientAIClient', () => {
       new RateLimitError('rate limit', 715_000),
     ]);
     const fallback = new FakeProvider('fallback', [{ value: 9 }]);
-    const client = new ResilientAIClient(primary, fallback, 3, 2);
+    const client = new ResilientAIClient(primary, fallback, 3, 2, silentLog);
 
     const start = Date.now();
     const result = await client.complete(makeRequest(), schema);
@@ -97,4 +98,72 @@ describe('ResilientAIClient', () => {
     expect(fallback.calls).toBe(1);
     expect(Date.now() - start).toBeLessThan(1_000);
   });
+
+  it('depois de cair no fallback, roteia as chamadas seguintes direto para ele e avisa uma única vez', async () => {
+    const primary = new FakeProvider('primary', [
+      new RateLimitError('rate limit', 715_000),
+      { value: 1 },
+    ]);
+    const fallback = new FakeProvider('fallback', [{ value: 1 }, { value: 2 }]);
+    const log = jest.fn();
+    const client = new ResilientAIClient(primary, fallback, 3, 2, log);
+
+    await expect(client.complete(makeRequest(), schema)).resolves.toEqual({ value: 1 });
+    await expect(client.complete(makeRequest(), schema)).resolves.toEqual({ value: 2 });
+
+    expect(primary.calls).toBe(1);
+    expect(fallback.calls).toBe(2);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0]?.[0]).toMatch(/primary sem cota \(retry-after 715s\).*fallback/);
+  });
+
+  it('insiste no provedor principal enquanto o retry-after curto couber no orçamento de espera', async () => {
+    const primary = new FakeProvider('primary', [
+      new RateLimitError('throttle', 10),
+      new RateLimitError('throttle', 10),
+      new RateLimitError('throttle', 10),
+      { value: 3 },
+    ]);
+    const fallback = new FakeProvider('fallback', []);
+    const log = jest.fn();
+    const client = new ResilientAIClient(primary, fallback, 3, 8, log);
+
+    await expect(client.complete(makeRequest(), schema)).resolves.toEqual({ value: 3 });
+
+    expect(primary.calls).toBe(4);
+    expect(fallback.calls).toBe(0);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('esgotar as tentativas de rate-limit também fixa o fallback para as chamadas seguintes', async () => {
+    const primary = new FakeProvider('primary', [new RateLimitError(), new RateLimitError()]);
+    const fallback = new FakeProvider('fallback', [{ value: 1 }, { value: 2 }]);
+    const client = new ResilientAIClient(primary, fallback, 3, 2, silentLog);
+
+    await client.complete(makeRequest(), schema);
+    await client.complete(makeRequest(), schema);
+
+    expect(primary.calls).toBe(2);
+    expect(fallback.calls).toBe(2);
+  });
+
+  it('erro que não é rate-limit no provedor principal propaga sem fixar o fallback', async () => {
+    const primary = new FakeProvider('primary', [
+      new Error('boom'),
+      new Error('boom'),
+      new Error('boom'),
+      { value: 5 },
+    ]);
+    const fallback = new FakeProvider('fallback', []);
+    const log = jest.fn();
+    const client = new ResilientAIClient(primary, fallback, 3, 2, log);
+
+    await expect(client.complete(makeRequest(), schema)).rejects.toThrow('boom');
+    await expect(client.complete(makeRequest(), schema)).resolves.toEqual({ value: 5 });
+
+    expect(fallback.calls).toBe(0);
+    expect(log).not.toHaveBeenCalled();
+  });
 });
+
+const silentLog = (): void => {};

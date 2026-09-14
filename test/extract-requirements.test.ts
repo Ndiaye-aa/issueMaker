@@ -1,6 +1,6 @@
 import type { ZodType } from 'zod';
 import { jest } from '@jest/globals';
-import { extractRequirements } from '../src/ingest/extract-requirements.js';
+import { ensureUniqueIds, extractRequirements } from '../src/ingest/extract-requirements.js';
 import { RequirementArraySchema, type Requirement } from '../src/schemas/requirement.js';
 
 const sddText = `## Autenticação
@@ -88,5 +88,21 @@ describe('extractRequirements', () => {
     );
 
     expect(requirements).toEqual([]);
+  });
+
+  it('renumera ids repetidos entre chunks e reescreve as dependências internas', () => {
+    const used = new Set(['REQ-1', 'REQ-2']);
+    const extracted = [
+      { ...makeRequirement('REQ-1', 'Cadastro'), dependencies: [] },
+      { ...makeRequirement('REQ-2', 'Edição'), dependencies: ['REQ-1'] },
+      { ...makeRequirement('REQ-7', 'Exclusão'), dependencies: ['REQ-2'] },
+    ];
+
+    const unique = ensureUniqueIds(extracted, used);
+
+    expect(unique.map((r) => r.id)).toEqual(['REQ-3', 'REQ-4', 'REQ-7']);
+    expect(unique[1]?.dependencies).toEqual(['REQ-3']);
+    expect(unique[2]?.dependencies).toEqual(['REQ-4']);
+    expect([...used].sort()).toEqual(['REQ-1', 'REQ-2', 'REQ-3', 'REQ-4', 'REQ-7']);
   });
 });

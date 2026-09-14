@@ -81,7 +81,7 @@ O sistema recebe um arquivo SDD (Markdown, Word ou PDF), extrai requisitos de fo
 | Papel | Provedor | Modelo sugerido | Justificativa |
 |---|---|---|---|
 | Principal | Groq | `llama-3.3-70b-versatile` | Cota gratuita generosa (até 14.400 req/dia dependendo do modelo), sem cláusula de uso dos dados para treinamento, alta velocidade |
-| Fallback | Ollama (local) | `qwen2.5:14b-instruct` | Sem limite de cota, 100% local — usado quando o Groq retorna rate-limit (HTTP 429) ou por preferência de privacidade |
+| Fallback | Ollama (local) | `OLLAMA_MODEL` (default `qwen2.5:3b-instruct`) | Sem limite de cota, 100% local — assume o restante do pipeline quando o Groq retorna rate-limit / cota esgotada (HTTP 429). Usa a API nativa `/api/chat` com structured output (JSON schema derivado do Zod) e `num_ctx` calculado pelo tamanho do prompt |
 
 ### 3.2 Interface Abstrata
 
@@ -140,7 +140,8 @@ class ResilientAIClient {
 ```
 
 ### 3.4 Tratamento de Erros
-- **HTTP 429 (rate limit):** backoff exponencial (2 tentativas no provedor atual) antes de acionar o fallback definitivamente.
+- **HTTP 429 (rate limit):** backoff exponencial respeitando o `retry-after`, insistindo no provedor atual até acumular 120 s de espera (throttle por minuto devolve 429 repetidos com retry-after curto). Um `retry-after` que estoure esse orçamento indica cota diária esgotada e aciona o fallback na hora.
+- **Cota esgotada:** uma vez acionado o fallback, todas as chamadas restantes daquela execução vão direto ao Ollama (sem tentar o Groq de novo), com um único aviso no stderr informando o modelo em uso.
 - **JSON inválido / falha de schema Zod:** retry no mesmo provedor, anexando a mensagem de erro de validação ao prompt seguinte ("sua resposta anterior falhou nesta validação: `{erro}`. Corrija.").
 - **Falha total (ambos os provedores):** o pipeline interrompe a execução do comando atual e reporta claramente qual etapa falhou, sem corromper arquivos de saída já gerados em etapas anteriores.
 
@@ -221,7 +222,7 @@ Todos os schemas são implementados em Zod, servindo simultaneamente como valida
 **Validação determinística pós-IA:** um passo de verificação de grafo confirma que nenhum requisito foi alocado em um sprint anterior ao de qualquer requisito do qual dependa. Caso a IA viole essa regra, o sistema reordena automaticamente antes de persistir o `sprint-plan.json`.
 
 ### 5.4 Geração de Backlog
-**Responsabilidade:** transformar requisitos + plano de sprints em itens de backlog, separados por camada (chamadas independentes para frontend e backend).
+**Responsabilidade:** transformar requisitos + plano de sprints em itens de backlog, separados por camada e por sprint (uma chamada de IA por sprint que tenha requisitos da camada; ids `BL-nnn` renumerados por camada ao final, `sprint` forçado ao do lote).
 
 **Renderização:** conversão determinística do JSON de backlog para Markdown, seguindo o template canônico de issue (ver Seção 6).
 

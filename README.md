@@ -84,8 +84,16 @@ node dist/cli/index.js backlog --in ./out/requirements.json --plan ./out/sprint-
 | Variável           | Obrigatória para                                           | Descrição                                                          |
 | ------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------- |
 | `GROQ_API_KEY`    | `process` (ou `analyze`/`plan`/`backlog`)           | Provedor principal de IA (camada gratuita do Groq)                   |
-| `OLLAMA_BASE_URL` | `process` (ou `analyze`/`plan`/`backlog`, opcional) | Fallback local ativado automaticamente em rate-limit do Groq         |
+| `OLLAMA_BASE_URL` | `process` (ou `analyze`/`plan`/`backlog`, opcional) | URL do Ollama local (default `http://localhost:11434`)               |
+| `OLLAMA_MODEL`    | `process` (ou `analyze`/`plan`/`backlog`, opcional) | Modelo do fallback local (default `qwen2.5:3b-instruct`; `ollama pull` antes) |
+
 | `GITHUB_TOKEN`    | `publish`                                                 | Token com permissão de escrita em issues no repositório de destino |
+
+Quando o Groq responde rate limit / cota esgotada (HTTP 429), a CLI avisa uma vez no stderr e
+roda **todo o restante do pipeline** no Ollama, sem tentar o Groq de novo naquela execução.
+O progresso por chunk/etapa também vai para o stderr (o stdout fica só com os resultados).
+O backlog é gerado por camada **e por sprint** (uma chamada de IA por sprint com requisitos da
+camada), com os ids `BL-nnn` renumerados por camada ao final.
 
 Nenhuma dessas credenciais é logada pela CLI em nenhuma etapa do pipeline.
 

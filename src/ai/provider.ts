@@ -8,6 +8,7 @@ export interface CompletionRequest {
 
 export interface AIProvider {
   readonly name: string;
+  readonly model?: string;
   complete<T>(request: CompletionRequest, schema: ZodType<T>): Promise<unknown>;
 }
 
@@ -26,7 +27,8 @@ export function isRateLimitError(err: unknown): err is RateLimitError {
 }
 
 export function parseJsonResponse(content: string): unknown {
-  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const raw = fenced ? fenced[1] : content;
+  const withoutThinking = content.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  const fenced = withoutThinking.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const raw = fenced ? fenced[1] : withoutThinking;
   return JSON.parse((raw ?? '').trim());
 }

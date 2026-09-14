@@ -1,5 +1,5 @@
 import type { Requirement } from '../src/schemas/requirement.js';
-import { validateAndFixSprintPlan } from '../src/plan/validate-sprint-plan.js';
+import { UNPLANNED_SPRINT_GOAL, validateAndFixSprintPlan } from '../src/plan/validate-sprint-plan.js';
 
 function makeRequirement(id: string, dependencies: string[] = []): Requirement {
   return {
@@ -68,5 +68,23 @@ describe('validateAndFixSprintPlan', () => {
 
     expect(sprintOf('REQ-001')).toBeLessThanOrEqual(sprintOf('REQ-002'));
     expect(sprintOf('REQ-002')).toBeLessThanOrEqual(sprintOf('REQ-003'));
+  });
+
+  it('descarta ids inexistentes e aloca requisitos esquecidos num sprint final', () => {
+    const requirements = [
+      makeRequirement('REQ-1'),
+      makeRequirement('REQ-2'),
+      makeRequirement('REQ-3'),
+    ];
+    const plan = {
+      sprints: [{ number: 1, goal: 'Base', requirementIds: ['REQ-1', 'REQ-99', 'REQ-1'] }],
+    };
+
+    const fixed = validateAndFixSprintPlan(requirements, plan);
+
+    expect(fixed.sprints).toEqual([
+      { number: 1, goal: 'Base', requirementIds: ['REQ-1'] },
+      { number: 2, goal: UNPLANNED_SPRINT_GOAL, requirementIds: ['REQ-2', 'REQ-3'] },
+    ]);
   });
 });

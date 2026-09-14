@@ -11,8 +11,8 @@ export interface GroqProviderOptions {
 
 export class GroqProvider implements AIProvider {
   readonly name = 'groq';
+  readonly model: string;
   private readonly client: OpenAI;
-  private readonly model: string;
 
   constructor(options: GroqProviderOptions) {
     this.client = new OpenAI({
@@ -27,7 +27,9 @@ export class GroqProvider implements AIProvider {
       const response = await this.client.chat.completions.create({
         model: this.model,
         temperature: request.temperature ?? 0.2,
-        max_tokens: 6000,
+        // Modelos de raciocínio (gpt-oss) contam os tokens de raciocínio aqui; 6000 cortava
+        // extrações grandes antes de terminar o JSON.
+        max_tokens: 16_000,
         messages: [
           { role: 'system', content: request.systemPrompt },
           { role: 'user', content: request.userPrompt },

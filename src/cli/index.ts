@@ -22,4 +22,7 @@ registerBacklogCommand(program);
 registerProcessCommand(program);
 registerPublishCommand(program);
 
-program.parse(process.argv);
+program.parseAsync(process.argv).catch((err: unknown) => {
+  console.error(`[sdd-bot] erro: ${err instanceof Error ? err.message : String(err)}`);
+  process.exitCode = 1;
+});
