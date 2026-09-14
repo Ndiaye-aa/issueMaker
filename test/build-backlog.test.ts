@@ -1,34 +1,46 @@
 import { jest } from '@jest/globals';
-import type { ZodType } from 'zod';
-import { buildBacklogForLayer } from '../src/backlog/build-backlog.js';
+import { buildBacklogForLayer, looksLikeEnvironment } from '../src/backlog/build-backlog.js';
+import { log } from '../src/cli/logger.js';
+import type { BacklogItemDraft } from '../src/schemas/backlog-item.js';
 import type { Requirement } from '../src/schemas/requirement.js';
 import type { SprintPlan } from '../src/schemas/sprint-plan.js';
 
-function makeRequirement(id: string, layer: Requirement['layer'], priority: Requirement['priority'] = 'must'): Requirement {
+function makeRequirement(
+  id: string,
+  layer: Requirement['layer'],
+  priority: Requirement['priority'] = 'must',
+  dependencies: string[] = [],
+): Requirement {
   return {
     id,
     title: `Requisito ${id}`,
     description: `Descrição do requisito ${id}`,
     layer,
     priority,
-    dependencies: [],
-    sourceSection: 'Seção',
+    effort: 'm',
+    dependencies,
+    sourceSection: '4.2 Autenticação',
   };
 }
 
-function makeDraft(id: string, sprint: number, requirementIds: string[]) {
+function makeDraft(overrides: Partial<BacklogItemDraft> = {}): BacklogItemDraft {
   return {
-    id,
-    epic: 'Epic',
+    title: 'Validar formato de e-mail no cadastro de usuário',
     type: 'feature',
-    title: `Item de backlog ${id} bem específico`,
-    description: `Descrição objetiva e detalhada do item ${id}`,
-    expectedBehavior: 'Comportamento esperado claro',
-    acceptanceCriteria: ['Critério testável'],
-    labels: [],
-    sprint,
-    layer: 'backend',
-    requirementIds,
+    description: 'Adicionar validação de formato no campo email do endpoint POST /users, usando regex RFC 5322.',
+    expectedBehavior: 'Requisições com email fora do padrão recebem HTTP 422 e a mensagem "email inválido".',
+    acceptanceCriteria: [
+      'Quando o email é válido, então o usuário é criado e a resposta é HTTP 201',
+      'Quando o email não tem "@", então a resposta é HTTP 422 com a mensagem "email inválido"',
+    ],
+    technicalSpecificity: {
+      httpCodes: ['201', '422'],
+      fields: ['email'],
+      limits: null,
+      needsClarification: false,
+      clarificationNote: null,
+    },
+    ...overrides,
   };
 }
 
@@ -47,60 +59,74 @@ const sprintPlan: SprintPlan = {
   ],
 };
 
+function requirementIdIn(userPrompt: string): string {
+  return /Requisito original: """Requisito (REQ-\d+)\./.exec(userPrompt)?.[1] ?? '?';
+}
+
 describe('buildBacklogForLayer', () => {
-  it('faz uma chamada por sprint que tenha requisitos da camada, só com esses requisitos', async () => {
-    const complete = jest.fn(async (request: { userPrompt: string }, _schema: ZodType<unknown>) => {
-      if (request.userPrompt.startsWith('Sprint 1')) return [makeDraft('BL-1', 1, ['REQ-1'])];
-      if (request.userPrompt.startsWith('Sprint 3')) {
-        return [makeDraft('BL-1', 3, ['REQ-2']), makeDraft('BL-2', 3, ['REQ-4'])];
-      }
-      throw new Error(`sprint inesperado: ${request.userPrompt.slice(0, 20)}`);
-    });
+  it('faz uma chamada por requisito da camada, com o requisito e o contexto do sprint no prompt', async () => {
+    const complete = jest.fn(async () => makeDraft());
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const items = await buildBacklogForLayer('backend', requirements, sprintPlan, { complete } as any);
 
-    expect(complete).toHaveBeenCalledTimes(2);
-    const [firstRequest] = complete.mock.calls[0] as [{ userPrompt: string }];
-    expect(firstRequest.userPrompt).toContain('"REQ-1"');
-    expect(firstRequest.userPrompt).not.toContain('"REQ-3"');
-    expect(firstRequest.userPrompt).not.toContain('"REQ-2"');
+    expect(complete).toHaveBeenCalledTimes(3);
+    const prompts = complete.mock.calls.map(([request]) => (request as { userPrompt: string }).userPrompt);
+    expect(prompts.map(requirementIdIn)).toEqual(['REQ-1', 'REQ-2', 'REQ-4']);
+    expect(prompts[0]).toContain('Requisito original: """Requisito REQ-1. Descrição do requisito REQ-1"""');
+    expect(prompts[0]).toContain('Sprint 1 — objetivo: Base.');
+    expect(prompts[0]).toContain('Camada: backend.');
+    expect(prompts[0]).not.toContain('REQ-3');
     expect(items).toHaveLength(3);
   });
 
-  it('renumera ids por camada, força o sprint do lote e resolve priority pelos requisitos', async () => {
-    const complete = jest.fn(async (request: { userPrompt: string }) => {
-      if (request.userPrompt.startsWith('Sprint 1')) return [makeDraft('BL-1', 99, ['REQ-1'])];
-      return [makeDraft('BL-1', 3, ['REQ-2']), makeDraft('BL-1', 3, ['REQ-4', 'REQ-2'])];
-    });
+  it('preenche id, sprint, layer, epic, rastreabilidade e priority localmente, nunca pelo modelo', async () => {
+    const complete = jest.fn(async () => makeDraft());
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const items = await buildBacklogForLayer('backend', requirements, sprintPlan, { complete } as any);
 
     expect(items.map((item) => item.id)).toEqual(['BL-001', 'BL-002', 'BL-003']);
     expect(items.map((item) => item.sprint)).toEqual([1, 3, 3]);
+    expect(items.map((item) => item.requirementIds)).toEqual([['REQ-1'], ['REQ-2'], ['REQ-4']]);
     expect(items.map((item) => item.priority)).toEqual(['must', 'could', 'should']);
+    expect(items.every((item) => item.layer === 'backend')).toBe(true);
+    expect(items.every((item) => item.epic === '4.2 Autenticação')).toBe(true);
+    expect(items.every((item) => item.labels.length === 0)).toBe(true);
+    expect(items[0]?.technicalSpecificity).toEqual(makeDraft().technicalSpecificity);
   });
 
-  it('divide sprints grandes em lotes de no máximo 20 requisitos', async () => {
+  it('descarta reproSteps de itens que não são bug e environment vazio ou que só repete contexto', async () => {
+    const complete = jest.fn(async () =>
+      makeDraft({ reproSteps: ['passo inventado'], environment: 'Frontend — tela de cadastro. Prioridade must. Sprint 1.' }),
+    );
+    const plan: SprintPlan = { sprints: [{ number: 1, goal: 'A', requirementIds: ['REQ-1'] }] };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const [item] = await buildBacklogForLayer('backend', requirements, plan, { complete } as any);
+
+    expect(item?.reproSteps).toBeUndefined();
+    expect(item?.environment).toBeUndefined();
+    expect(looksLikeEnvironment('   ')).toBe(false);
+    expect(looksLikeEnvironment('Chrome 128 / Ubuntu 24.04')).toBe(true);
+    expect(looksLikeEnvironment('Node.js 20 em Docker')).toBe(true);
+  });
+
+  it('gera uma chamada por requisito mesmo em sprints grandes', async () => {
     const many = Array.from({ length: 45 }, (_, i) => makeRequirement(`REQ-${i + 1}`, 'backend'));
     const plan: SprintPlan = { sprints: [{ number: 1, goal: 'Tudo', requirementIds: many.map((r) => r.id) }] };
-    const complete = jest.fn(async (request: { userPrompt: string }) => {
-      const ids = [...request.userPrompt.matchAll(/"id":"(REQ-\d+)"/g)].map((m) => m[1] as string);
-      return [makeDraft('BL-1', 1, ids.slice(0, 1))];
-    });
+    const complete = jest.fn(async () => makeDraft());
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const items = await buildBacklogForLayer('backend', many, plan, { complete } as any);
 
-    expect(complete).toHaveBeenCalledTimes(3);
-    const sizes = complete.mock.calls.map(([req]) => ((req as { userPrompt: string }).userPrompt.match(/"id":"REQ-/g) ?? []).length);
-    expect(sizes).toEqual([20, 20, 5]);
-    expect(items).toHaveLength(3);
+    expect(complete).toHaveBeenCalledTimes(45);
+    expect(items).toHaveLength(45);
+    expect(items[44]?.id).toBe('BL-045');
   });
 
   it('retorna vazio sem chamar a IA quando a camada não tem requisitos em nenhum sprint', async () => {
-    const complete = jest.fn(async () => []);
+    const complete = jest.fn(async () => makeDraft());
     const onlyBackend = requirements.filter((r) => r.layer === 'backend');
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -108,5 +134,191 @@ describe('buildBacklogForLayer', () => {
 
     expect(items).toEqual([]);
     expect(complete).not.toHaveBeenCalled();
+  });
+
+  it('avisa (sem abortar) quando dois itens da camada ficam com o mesmo título', async () => {
+    const warn = jest.spyOn(log, 'warn').mockImplementation(() => undefined);
+    const complete = jest.fn(async () => makeDraft({ title: 'Validar formato de e-mail no cadastro' }));
+    const plan: SprintPlan = { sprints: [{ number: 1, goal: 'A', requirementIds: ['REQ-1', 'REQ-2'] }] };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items = await buildBacklogForLayer('backend', requirements, plan, { complete } as any);
+
+    expect(items).toHaveLength(2);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain('título repetido');
+    expect(warn.mock.calls[0]?.[0]).toContain('REQ-1');
+    expect(warn.mock.calls[0]?.[0]).toContain('REQ-2');
+    warn.mockRestore();
+  });
+});
+
+describe('buildBacklogForLayer — dependências', () => {
+  it('deriva dependsOn de Requirement.dependencies, descartando auto-referência e ids desconhecidos', async () => {
+    const reqs = [
+      makeRequirement('REQ-1', 'backend'),
+      makeRequirement('REQ-2', 'frontend', 'must', ['REQ-1', 'REQ-2', 'REQ-99', 'REQ-1']),
+    ];
+    const plan: SprintPlan = { sprints: [{ number: 1, goal: 'A', requirementIds: ['REQ-1', 'REQ-2'] }] };
+    const complete = jest.fn(async () => makeDraft());
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const [item] = await buildBacklogForLayer('frontend', reqs, plan, { complete } as any);
+
+    expect(item?.requirementIds).toEqual(['REQ-2']);
+    expect(item?.dependsOn).toEqual(['REQ-1']);
+  });
+
+  it('avisa (sem abortar) quando os requisitos da camada formam um ciclo', async () => {
+    const warn = jest.spyOn(log, 'warn').mockImplementation(() => undefined);
+    const reqs = [makeRequirement('REQ-1', 'backend', 'must', ['REQ-2']), makeRequirement('REQ-2', 'backend', 'must', ['REQ-1'])];
+    const plan: SprintPlan = { sprints: [{ number: 1, goal: 'A', requirementIds: ['REQ-1', 'REQ-2'] }] };
+    const complete = jest.fn(async () => makeDraft());
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items = await buildBacklogForLayer('backend', reqs, plan, { complete } as any);
+
+    expect(items).toHaveLength(2);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/ciclo de dependências.*REQ-1 → REQ-2 → REQ-1/));
+    warn.mockRestore();
+  });
+});
+
+describe('buildBacklogForLayer — lotes (batchSize > 1)', () => {
+  function requirementIdsIn(userPrompt: string): string[] {
+    return [...userPrompt.matchAll(/\[(REQ-\d+)\]/g)].map((m) => m[1]!);
+  }
+
+  it('agrupa até batchSize requisitos da mesma sprint numa única chamada, sem misturar sprints', async () => {
+    const complete = jest.fn(async (request: { userPrompt: string }) => {
+      const ids = requirementIdsIn(request.userPrompt);
+      // Lote de 1 requisito continua indo pelo caminho de chamada única (sem colchetes/array).
+      if (ids.length === 0) return makeDraft();
+      return ids.map((requirementId) => ({ ...makeDraft(), requirementId }));
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items = await buildBacklogForLayer('backend', requirements, sprintPlan, { complete } as any, {
+      batchSize: 4,
+    });
+
+    // sprint 1 (REQ-1): lote de 1, vai pelo caminho de chamada única (sem colchetes).
+    // sprint 3 (REQ-2, REQ-4): lote de 2, vai pelo caminho de lote.
+    expect(complete).toHaveBeenCalledTimes(2);
+    const prompts = complete.mock.calls.map(([request]) => (request as { userPrompt: string }).userPrompt);
+    expect(prompts[0]).toContain('Requisito original: """Requisito REQ-1.');
+    expect(requirementIdsIn(prompts[1]!)).toEqual(['REQ-2', 'REQ-4']);
+    expect(items.map((item) => item.requirementIds[0])).toEqual(['REQ-1', 'REQ-2', 'REQ-4']);
+  });
+
+  it('fatia um sprint maior que batchSize em vários lotes', async () => {
+    const many = Array.from({ length: 5 }, (_, i) => makeRequirement(`REQ-${i + 1}`, 'backend'));
+    const plan: SprintPlan = { sprints: [{ number: 1, goal: 'Tudo', requirementIds: many.map((r) => r.id) }] };
+    const complete = jest.fn(async (request: { userPrompt: string }) => {
+      const ids = requirementIdsIn(request.userPrompt);
+      // Lote de 1 requisito continua indo pelo caminho de chamada única (sem colchetes/array).
+      if (ids.length === 0) return makeDraft();
+      return ids.map((requirementId) => ({ ...makeDraft(), requirementId }));
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items = await buildBacklogForLayer('backend', many, plan, { complete } as any, { batchSize: 2 });
+
+    expect(complete).toHaveBeenCalledTimes(3); // lotes de 2, 2, 1
+    expect(items).toHaveLength(5);
+    expect(items.map((item) => item.requirementIds[0])).toEqual(['REQ-1', 'REQ-2', 'REQ-3', 'REQ-4', 'REQ-5']);
+  });
+
+  it('remonta cada item pelo requirementId, mesmo com a resposta em ordem diferente da pedida', async () => {
+    const plan: SprintPlan = { sprints: [{ number: 1, goal: 'A', requirementIds: ['REQ-1', 'REQ-2'] }] };
+    const complete = jest.fn(async () => [
+      { ...makeDraft({ title: 'Implementar item do requisito dois' }), requirementId: 'REQ-2' },
+      { ...makeDraft({ title: 'Implementar item do requisito um' }), requirementId: 'REQ-1' },
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items = await buildBacklogForLayer('backend', requirements, plan, { complete } as any, { batchSize: 2 });
+
+    // Mesmo com a IA respondendo REQ-2 antes de REQ-1, o item de saída segue a ordem do lote.
+    expect(items.map((item) => [item.requirementIds[0], item.title])).toEqual([
+      ['REQ-1', 'Implementar item do requisito um'],
+      ['REQ-2', 'Implementar item do requisito dois'],
+    ]);
+  });
+
+  it('batchSize 1 (default) continua fazendo uma chamada por requisito, sem requirementId no prompt', async () => {
+    const complete = jest.fn(async () => makeDraft());
+    const plan: SprintPlan = { sprints: [{ number: 1, goal: 'A', requirementIds: ['REQ-1'] }] };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await buildBacklogForLayer('backend', requirements, plan, { complete } as any);
+
+    expect(complete).toHaveBeenCalledTimes(1);
+    const prompt = (complete.mock.calls[0]?.[0] as { userPrompt: string }).userPrompt;
+    expect(prompt).toContain('Requisito original: """Requisito REQ-1.');
+    expect(prompt).not.toContain('[REQ-1]');
+  });
+});
+
+describe('buildBacklogForLayer — requisitos shared', () => {
+  const withShared: Requirement[] = [
+    makeRequirement('REQ-1', 'backend'),
+    makeRequirement('REQ-2', 'shared'),
+    makeRequirement('REQ-3', 'frontend'),
+  ];
+  const plan: SprintPlan = {
+    sprints: [{ number: 1, goal: 'Base', requirementIds: ['REQ-1', 'REQ-2', 'REQ-3'] }],
+  };
+
+  it('inclui os requisitos shared no backlog de backend, com aviso só no prompt deles', async () => {
+    const complete = jest.fn(async () => makeDraft());
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items = await buildBacklogForLayer('backend', withShared, plan, { complete } as any);
+
+    const prompts = complete.mock.calls.map(([request]) => (request as { userPrompt: string }).userPrompt);
+    expect(prompts.map(requirementIdIn)).toEqual(['REQ-1', 'REQ-2']);
+    expect(prompts[0]).not.toMatch(/transversal/);
+    expect(prompts[1]).toMatch(/transversal/);
+    expect(items.map((item) => item.requirementIds[0])).toEqual(['REQ-1', 'REQ-2']);
+    expect(items.every((item) => item.layer === 'backend')).toBe(true);
+  });
+
+  it('não envia os requisitos shared para o backlog de frontend', async () => {
+    const complete = jest.fn(async () => makeDraft());
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items = await buildBacklogForLayer('frontend', withShared, plan, { complete } as any);
+
+    const prompts = complete.mock.calls.map(([request]) => (request as { userPrompt: string }).userPrompt);
+    expect(prompts.map(requirementIdIn)).toEqual(['REQ-3']);
+    expect(items.map((item) => item.requirementIds[0])).toEqual(['REQ-3']);
+  });
+
+  it('mantém a numeração BL-xxx na ordem sprint → requisito mesmo com respostas fora de ordem', async () => {
+    const many = Array.from({ length: 5 }, (_, i) => makeRequirement(`REQ-${i + 1}`, 'backend'));
+    const twoSprints: SprintPlan = {
+      sprints: [
+        { number: 1, goal: 'A', requirementIds: ['REQ-1', 'REQ-2', 'REQ-3'] },
+        { number: 2, goal: 'B', requirementIds: ['REQ-4', 'REQ-5'] },
+      ],
+    };
+    const complete = jest.fn(async (request: { userPrompt: string }) => {
+      const id = requirementIdIn(request.userPrompt);
+      // O primeiro requisito demora mais: sem reordenação, ele terminaria por último.
+      await new Promise((resolve) => setTimeout(resolve, id === 'REQ-1' ? 30 : 1));
+      return makeDraft({ title: `Implementar requisito ${id} no módulo de cadastro` });
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items = await buildBacklogForLayer('backend', many, twoSprints, { complete } as any);
+
+    expect(items.map((item) => [item.id, item.sprint, item.requirementIds[0]])).toEqual([
+      ['BL-001', 1, 'REQ-1'],
+      ['BL-002', 1, 'REQ-2'],
+      ['BL-003', 1, 'REQ-3'],
+      ['BL-004', 2, 'REQ-4'],
+      ['BL-005', 2, 'REQ-5'],
+    ]);
   });
 });

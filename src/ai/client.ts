@@ -1,7 +1,8 @@
 import type { ZodType } from 'zod';
 import { z } from 'zod';
-import type { AIProvider, CompletionRequest } from './provider.js';
-import { isRateLimitError } from './provider.js';
+import type { AIClient, AIProvider, CompletionRequest } from './provider.js';
+import { formatUsage, isRateLimitError, isTransientError } from './provider.js';
+import { Semaphore } from '../util/concurrency.js';
 
 /**
  * Orçamento total de espera por rate limit num mesmo provedor. Throttles por minuto
@@ -12,40 +13,79 @@ import { isRateLimitError } from './provider.js';
  */
 const MAX_AUTO_RETRY_WAIT_MS = 120_000;
 
-export class ResilientAIClient {
-  private primaryTripped = false;
+export interface ConcurrencyOptions {
+  /** Chamadas simultâneas permitidas no provedor principal (API remota). */
+  primary: number;
+  /** Chamadas simultâneas no fallback. Ollama em CPU não ganha nada com paralelismo. */
+  fallback: number;
+}
 
+const DEFAULT_CONCURRENCY: ConcurrencyOptions = { primary: 1, fallback: 1 };
+
+export class ResilientAIClient implements AIClient {
+  private primaryTripped = false;
+  private readonly primarySlots: Semaphore;
+  private readonly fallbackSlots: Semaphore;
+
+  /**
+   * `fallback` é opcional: sem ele, um rate limit que estoure o orçamento de espera
+   * propaga como erro em vez de trocar de provedor.
+   */
   constructor(
     private readonly primary: AIProvider,
-    private readonly fallback: AIProvider,
+    private readonly fallback: AIProvider | undefined,
     private readonly maxSchemaRetries = 3,
     private readonly maxRateLimitRetries = 8,
     private readonly log: (message: string) => void = console.error,
-  ) {}
+    concurrency: ConcurrencyOptions = DEFAULT_CONCURRENCY,
+  ) {
+    this.primarySlots = new Semaphore(Math.max(1, concurrency.primary));
+    this.fallbackSlots = new Semaphore(Math.max(1, concurrency.fallback));
+  }
+
+  /** Uma linha por provedor que fez chamadas, com os tokens que ele conseguiu medir. */
+  usageReport(): string[] {
+    return [this.primary, this.fallback]
+      .map((provider) => (provider ? formatUsage(provider) : undefined))
+      .filter((line): line is string => line !== undefined)
+      .map((line) => `uso de IA: ${line}`);
+  }
 
   async complete<T>(request: CompletionRequest, schema: ZodType<T>): Promise<T> {
-    if (this.primaryTripped) {
-      return this.withRateLimitRetry(this.fallback, request, schema);
+    const fallback = this.fallback;
+    if (this.primaryTripped && fallback) {
+      return this.runOnFallback(fallback, request, schema);
     }
     try {
-      return await this.withRateLimitRetry(this.primary, request, schema);
+      return await this.primarySlots.run(() =>
+        this.withRateLimitRetry(this.primary, request, schema),
+      );
     } catch (err) {
-      if (!isRateLimitError(err)) {
+      if (!isRateLimitError(err) || !fallback) {
         throw err;
       }
-      this.tripPrimary(err.retryAfterMs);
-      return this.withRateLimitRetry(this.fallback, request, schema);
+      this.tripPrimary(fallback, err.retryAfterMs);
+      return this.runOnFallback(fallback, request, schema);
     }
   }
 
-  private tripPrimary(retryAfterMs: number | undefined): void {
+  private runOnFallback<T>(
+    fallback: AIProvider,
+    request: CompletionRequest,
+    schema: ZodType<T>,
+  ): Promise<T> {
+    return this.fallbackSlots.run(() => this.withRateLimitRetry(fallback, request, schema));
+  }
+
+  private tripPrimary(fallback: AIProvider, retryAfterMs: number | undefined): void {
+    if (this.primaryTripped) return;
     this.primaryTripped = true;
     const retryHint =
       retryAfterMs === undefined ? '' : ` (retry-after ${Math.ceil(retryAfterMs / 1000)}s)`;
-    const fallbackModel = this.fallback.model ? `: ${this.fallback.model}` : '';
+    const fallbackModel = fallback.model ? `: ${fallback.model}` : '';
     this.log(
       `[sdd-bot] ${this.primary.name} sem cota${retryHint}. ` +
-        `O restante do pipeline vai rodar no ${this.fallback.name}${fallbackModel}.`,
+        `O restante do pipeline vai rodar no ${fallback.name}${fallbackModel}.`,
     );
   }
 
@@ -75,6 +115,11 @@ export class ResilientAIClient {
     throw lastError;
   }
 
+  /**
+   * Repete a chamada quando a resposta não passa no schema (anexando o erro ao prompt para
+   * o modelo se corrigir) ou quando a falha é transitória (rede/5xx/loop de geração — aí o
+   * prompt é reenviado como está, porque o problema não foi o conteúdo).
+   */
   private async withSchemaRetry<T>(
     provider: AIProvider,
     request: CompletionRequest,
@@ -91,7 +136,9 @@ export class ResilientAIClient {
           throw err;
         }
         lastError = err;
-        currentRequest = appendSchemaErrorToPrompt(currentRequest, err);
+        if (!isTransientError(err)) {
+          currentRequest = appendSchemaErrorToPrompt(currentRequest, err);
+        }
         await sleep(exponentialDelayMs(attempt));
       }
     }

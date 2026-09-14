@@ -42,3 +42,21 @@ describe('chunkDocument', () => {
     expect(chunks.length).toBeGreaterThan(1);
   });
 });
+
+describe('chunkByTokenLimit — pontos de corte', () => {
+  it('prefere cortar em quebra de parágrafo a cortar no meio de uma linha', () => {
+    const paragraph = 'palavra '.repeat(6).trim(); // 47 chars
+    const content = [paragraph, paragraph, paragraph].join('\n\n'); // 145 chars
+    const parts = chunkByTokenLimit({ sectionTitle: 'S', content }, 25); // maxChars = 100
+
+    expect(parts).toHaveLength(2);
+    expect(parts[0]?.content).toBe(`${paragraph}\n\n${paragraph}\n\n`);
+    expect(parts[1]?.content).toBe(paragraph);
+    expect(parts.map((p) => p.content).join('')).toBe(content);
+  });
+
+  it('cai para corte bruto quando não há separador razoável', () => {
+    const parts = chunkByTokenLimit({ sectionTitle: 'S', content: 'x'.repeat(95) }, 10);
+    expect(parts.map((p) => p.content.length)).toEqual([40, 40, 15]);
+  });
+});

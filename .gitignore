@@ -5,3 +5,4 @@ dist/
 coverage/
 in/
 out/
+.sdd-bot-cache/

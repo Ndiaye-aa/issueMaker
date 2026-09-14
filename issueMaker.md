@@ -71,7 +71,7 @@ O sistema recebe um arquivo SDD (Markdown, Word ou PDF), extrai requisitos de fo
 2. **IA isolada e substituível:** toda interação com modelos de linguagem passa por uma interface única (`AIProvider`), permitindo trocar de provedor sem alterar a lógica de negócio.
 3. **Validação estrita:** toda saída de IA é validada contra um schema Zod antes de prosseguir no pipeline. Falha de validação aciona retry automático com o erro anexado ao prompt.
 4. **Checkpoint humano obrigatório:** nenhuma issue é publicada sem uma etapa de revisão manual dos arquivos de backlog gerados.
-5. **Resiliência de custo zero:** o motor de IA opera inteiramente em camadas gratuitas (Groq) com fallback local (Ollama), sem dependência de billing.
+5. **Resiliência de custo zero:** o motor de IA pode operar inteiramente em camadas gratuitas (Groq) com fallback local (Ollama), sem dependência de billing. O provedor principal e o fallback são configuráveis (`AI_PRIMARY`/`AI_FALLBACK`): Claude pela própria máquina via Agent SDK (`claude-code`, default), API compatível com OpenAI, Groq ou Ollama; o fallback é opcional.
 
 ---
 
@@ -177,19 +177,31 @@ interface SprintPlan {
 ```typescript
 interface BacklogItem {
   id: string;
-  epic: string;
+  epic: string;                        // = Requirement.sourceSection (vira a label area:)
   type: 'feature' | 'bug' | 'tech-debt';
-  title: string;                       // específico e descritivo, nunca genérico
-  description: string;
-  expectedBehavior: string;            // obrigatório em todo item
+  title: string;                       // verbo no infinitivo + objeto + contexto, ≤ 70 chars
+  description: string;                 // mecanismo (o que implementar / o que está quebrado)
+  expectedBehavior: string;            // resultado observável, distinto da descrição
   reproSteps?: string[];               // obrigatório apenas quando type === 'bug'
   environment?: string;                // preenchido apenas se o SDD especificar
-  acceptanceCriteria: string[];
-  labels: string[];
+  acceptanceCriteria: string[];        // ≥ 1 caminho de sucesso + casos negativos
+  technicalSpecificity?: {             // números e nomes reais, não adjetivos
+    httpCodes: string[];
+    fields: string[];
+    limits: string | null;
+    needsClarification: boolean;       // true ⇒ label status: needs-clarification
+    clarificationNote: string | null;
+  };
+  labels: string[];                    // legado; não publicado (labels vêm de dado estruturado)
   sprint: number;
   layer: 'frontend' | 'backend';
+  requirementIds: string[];            // rastreabilidade (1 requisito por item)
+  dependsOn: string[];                 // ids de requisito (REQ-x) de que depende; vira "Depende de: #N"
 }
 ```
+
+`Requirement` ganhou `effort: 'xs' | 's' | 'm' | 'l' | 'xl'` (1/2/3/5/8 pontos) e `Sprint`
+ganhou `startDate?`/`dueDate?` (`YYYY-MM-DD`); `SprintPlan` ganhou `warnings?: string[]`.
 
 Todos os schemas são implementados em Zod, servindo simultaneamente como validação em runtime e como fonte de tipos TypeScript (`z.infer<typeof Schema>`).
 
@@ -217,12 +229,19 @@ Todos os schemas são implementados em Zod, servindo simultaneamente como valida
 - Persistência em `requirements.json`
 
 ### 5.3 Planejamento de Sprints
-**Responsabilidade:** organizar os requisitos extraídos em sprints, respeitando o grafo de dependências.
+**Responsabilidade:** organizar os requisitos extraídos em sprints por esforço ponderado, respeitando o grafo de dependências.
 
-**Validação determinística pós-IA:** um passo de verificação de grafo confirma que nenhum requisito foi alocado em um sprint anterior ao de qualquer requisito do qual dependa. Caso a IA viole essa regra, o sistema reordena automaticamente antes de persistir o `sprint-plan.json`.
+**Método:** esforço por requisito (estimado na extração) → capacidade efetiva por sprint (`--capacity × --buffer`) → nº mínimo de sprints = esforço total ÷ capacidade → distribuição respeitando dependências e prioridade.
+
+**Validação determinística pós-IA:**
+1. Grafo de dependências: nenhum requisito antes daquilo de que depende (reordenação automática).
+2. Transbordo por capacidade (pontos) e por teto de itens: saem primeiro `could`, depois `should`, levando dependentes.
+3. Pull-forward: `must` (depois `should`) de sprints posteriores sobem enquanto houver capacidade e as dependências permitirem.
+4. Sprints vazias removidas e renumeradas; goals de sprints cuja composição mudou são reescritos por uma chamada extra (refine anti-genérico).
+5. Datas sequenciais (`--start-date` + duração) e auditoria (`warnings`): goal genérico, desbalanceamento (> 130% da média ou > 50% entre extremos), sobrecarga/subutilização, `could` antes de `must` sem dependência, dependência violada.
 
 ### 5.4 Geração de Backlog
-**Responsabilidade:** transformar requisitos + plano de sprints em itens de backlog, separados por camada e por sprint (uma chamada de IA por sprint que tenha requisitos da camada; ids `BL-nnn` renumerados por camada ao final, `sprint` forçado ao do lote).
+**Responsabilidade:** transformar cada requisito em um item de backlog (uma chamada de IA por requisito, por camada; ids `BL-nnn` renumerados por camada ao final). `sprint`, `layer`, `epic` (= seção do SDD) e `requirementIds` são preenchidos localmente; `priority` é calculada do requisito de origem. As cinco regras do prompt (Apêndice A.3) são validadas deterministicamente sobre a resposta e devolvidas ao modelo em caso de violação. Títulos repetidos na mesma camada geram aviso.
 
 **Renderização:** conversão determinística do JSON de backlog para Markdown, seguindo o template canônico de issue (ver Seção 6).
 
@@ -230,11 +249,16 @@ Todos os schemas são implementados em Zod, servindo simultaneamente como valida
 **Responsabilidade:** ler os arquivos `.md` de backlog (já revisados manualmente) e criar issues no repositório GitHub escolhido.
 
 **Fluxo:**
-1. Parse determinístico do Markdown → `BacklogItem[]`
-2. Garantir existência das labels necessárias (`ensureLabelsExist`)
-3. Se `mode === 'replace'`: fechar issues existentes com a label `sdd-bot`
-4. Criar uma issue por `BacklogItem`, com labels `sdd-bot` + `sprint-N` + labels específicas do item
-5. Modo `--dry-run` disponível em toda execução, exibindo o resultado sem chamar a API de escrita
+1. Parse determinístico dos Markdowns (várias camadas na mesma execução) → `BacklogItem[]` (+ `sprint-plan.json` opcional para os milestones)
+2. Ordenação topológica por `dependsOn` (ciclo = erro antes de qualquer escrita)
+3. Se `mode === 'replace'`: fechar issues existentes com a label `sdd-bot`; se `add`: carregar `REQ-x → #N` das issues abertas (resolve dependências de execuções/camadas anteriores)
+4. Garantir existência das labels e alinhar cores (`ensureLabelsExist`)
+5. Garantir milestones `Sprint N` (reaproveita/reabre existentes; descrição = objetivo; due date do plano)
+6. Criar uma issue por `BacklogItem` em passada única: o corpo cita `**Depende de:** #N` com os números já criados; labels por dimensão: `sdd-bot`, `type: …`, `layer: …`, `priority: …`, `area: …` e, se houver decisão pendente, `status: needs-clarification`
+7. Fechar milestones `Sprint N` cujas issues estão todas fechadas
+8. Modo `--dry-run` disponível em toda execução, exibindo o resultado (e a ordem de criação) sem chamar a API de escrita
+
+**Critérios de label:** ortogonalidade (uma dimensão por label), baixa cardinalidade, nomenclatura `dimensão: valor`, derivadas de enum/dado calculado (nunca de texto livre), mutuamente exclusivas dentro da dimensão, cor por família. **Critérios de milestone:** um único critério de agrupamento (tempo), nome padronizado `Sprint N`, due date calculada, descrição = objetivo, sem sobreposição, fechado quando 100% das issues fecham.
 
 ---
 
@@ -243,7 +267,8 @@ Todos os schemas são implementados em Zod, servindo simultaneamente como valida
 ```markdown
 ### [Sprint {N}] {Título específico e descritivo}
 **Tipo:** {feature|bug|tech-debt}
-**Labels:** `label1`, `label2`
+**Prioridade:** {must|should|could}
+**Depende de:** #3, #7                <!-- apenas se dependsOn não vazio; REQ-x no backlog.md -->
 
 **Descrição:**
 {Descrição objetiva do comportamento atual ou funcionalidade necessária}
@@ -258,8 +283,16 @@ Todos os schemas são implementados em Zod, servindo simultaneamente como valida
 **Ambiente:** {SO/navegador/versão}   <!-- apenas se especificado no SDD -->
 
 **Critérios de aceite:**
-- [ ] {critério 1}
-- [ ] {critério 2}
+- [ ] {critério de caminho de sucesso}
+- [ ] {critério de caso negativo}
+
+**Especificidade técnica:**
+- Códigos HTTP: {200, 422}            <!-- linha omitida se vazio -->
+- Campos: `{campo1}`, `{campo2}`      <!-- idem -->
+- Limites: {limite}                   <!-- omitida se null -->
+- Precisa de esclarecimento: {sim — decisão pendente | não}
+
+**Rastreabilidade:** {REQ-001} (ver requirements.json)
 
 ---
 ```
@@ -410,25 +443,49 @@ IDs já usados até agora: {{ lista_de_ids_existentes }}
 Você é um gerente técnico de projeto experiente. Organize os requisitos recebidos em
 sprints, respeitando dependências, priorizando must > should > could, com objetivo
 coerente por sprint e esforço equilibrado entre sprints.
+O QUE É UMA BOA SPRINT: objetivo único e demonstrável (goals genéricos proibidos), carga
+balanceada dentro da capacidade em pontos, dependências respeitadas, must o mais cedo
+possível, tamanho adequado ao período, sem sprint vazia. Pontos: xs=1, s=2, m=3, l=5, xl=8.
 
 [USER]
-Requisitos (JSON): {{ requirements.json }}
 Duração do sprint: {{ sprint_length }}
+Capacidade efetiva: {{ pontos }} pontos por sprint. Esforço total: {{ total }} pontos em
+{{ n }} requisitos (portanto no mínimo {{ ceil(total / pontos) }} sprints).
+Teto de itens: {{ max_per_sprint }} requisitos por sprint.
+Requisitos (JSON): {{ id, title, layer, priority, effort, dependencies }}
 ```
+
+Quando a distribuição determinística muda a composição de uma sprint, um segundo prompt
+(`src/ai/prompts/sprint-goals.ts`) reescreve só os goals dessas sprints.
 
 ### A.3 Geração de Backlog
+O prompt completo (com as cinco regras) está em `src/ai/prompts/backlog.ts` (`BACKLOG_SYSTEM_PROMPT`).
+Uma chamada por requisito:
+
 ```
 [SYSTEM]
-Você é um Product Owner técnico. Transforme requisitos de {{ layer }} em itens de
-backlog prontos para virar issues no GitHub, seguindo boas práticas:
-- Título específico e descritivo, nunca genérico
-- Escopo único por item
-- "expectedBehavior" obrigatório
-- "reproSteps" obrigatório apenas quando type === "bug"
-- "environment" apenas se especificado no SDD original
-- Sem referências a prints/logs/GIFs
+Você é um engenheiro de software sênior especializado em escrever issues técnicas
+de altíssima qualidade. Sua única tarefa é transformar um requisito em uma issue
+completa, seguindo rigorosamente as regras abaixo.
+
+REGRA 1 — DESCRIÇÃO (o mecanismo, não o resultado)
+REGRA 2 — CRITÉRIOS DE ACEITE (testáveis, não redundantes)
+REGRA 3 — CASOS NEGATIVOS (obrigatórios, não opcionais)
+REGRA 4 — ESPECIFICIDADE TÉCNICA (números e nomes reais, não adjetivos)
+REGRA 5 — TÍTULO (verbo no infinitivo + objeto + contexto, ≤ 70 caracteres,
+          sem prefixo de tipo, sintoma observável para bugs, teste anti-genérico)
+
+FORMATO DE SAÍDA — responda SOMENTE com este JSON:
+{ "title", "type", "description", "expectedBehavior", "acceptanceCriteria": [...],
+  "technicalSpecificity": { "httpCodes", "fields", "limits", "needsClarification",
+  "clarificationNote" }, "reproSteps": [apenas se bug], "environment": [se especificado] }
 
 [USER]
-Requisitos de {{ layer }} (JSON): {{ requirements_filtrados }}
-Plano de sprints (JSON): {{ sprint-plan.json }}
+Requisito original: """{{ título }}. {{ descrição }}"""
+Contexto adicional (se houver): """Sprint {{ n }} — objetivo: {{ goal }}. Camada: {{ layer }}.
+Prioridade (MoSCoW): {{ priority }}. Esforço estimado: {{ effort }}. Seção do SDD de origem:
+{{ sourceSection }}. Dependências: {{ ids }}."""
 ```
+
+Os campos `id`, `epic`, `labels`, `sprint`, `layer` e `requirementIds` não são pedidos ao
+modelo: vêm de dado estruturado.

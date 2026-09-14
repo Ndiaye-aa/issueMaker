@@ -18,5 +18,8 @@ Esses dois requisitos descrevem a mesma coisa?`;
     systemPrompt: SYSTEM_PROMPT,
     userPrompt,
     temperature: 0,
+    // Decisão binária e mecânica: um modelo leve resolve pelo mesmo preço de uma fração
+    // do modelo principal (ver ClaudeCodeProvider.lightModel).
+    tier: 'light',
   };
 }

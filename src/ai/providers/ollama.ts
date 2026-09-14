@@ -1,9 +1,9 @@
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import type { ZodType } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
-import type { AIProvider, CompletionRequest } from '../provider.js';
-import { parseJsonResponse } from '../provider.js';
+import { z } from 'zod';
+import type { AIProvider, CompletionRequest, ProviderUsage } from '../provider.js';
+import { TransientError, addUsage, emptyUsage, parseJsonResponse } from '../provider.js';
 import { log } from '../../cli/logger.js';
 
 export interface HttpResponse {
@@ -53,6 +53,8 @@ interface OllamaChatChunk {
   done?: boolean;
   done_reason?: string;
   error?: string;
+  prompt_eval_count?: number;
+  eval_count?: number;
 }
 
 export class OllamaProvider implements AIProvider {
@@ -62,6 +64,7 @@ export class OllamaProvider implements AIProvider {
   private readonly numPredict: number;
   private readonly maxNumCtx: number;
   private readonly transport: HttpTransport;
+  private readonly usageTotals: ProviderUsage = emptyUsage();
 
   constructor(options: OllamaProviderOptions = {}) {
     this.baseURL = normalizeBaseURL(options.baseURL ?? DEFAULT_BASE_URL);
@@ -69,6 +72,10 @@ export class OllamaProvider implements AIProvider {
     this.numPredict = options.numPredict ?? DEFAULT_NUM_PREDICT;
     this.maxNumCtx = options.maxNumCtx ?? DEFAULT_MAX_NUM_CTX;
     this.transport = options.transport ?? postJson;
+  }
+
+  get usage(): ProviderUsage {
+    return { ...this.usageTotals };
   }
 
   async complete<T>(request: CompletionRequest, schema: ZodType<T>): Promise<unknown> {
@@ -88,7 +95,8 @@ export class OllamaProvider implements AIProvider {
     };
 
     const response = await this.post(body, repetitionGuard());
-    const { content, doneReason } = parseStream(response.text);
+    const { content, doneReason, inputTokens, outputTokens } = parseStream(response.text);
+    addUsage(this.usageTotals, { calls: 1, inputTokens, outputTokens });
     if (!content) {
       throw new Error('resposta vazia do provedor Ollama');
     }
@@ -136,7 +144,7 @@ export function normalizeBaseURL(baseURL: string): string {
 }
 
 function toJsonSchema(schema: ZodType<unknown>): Record<string, unknown> {
-  const jsonSchema: Record<string, unknown> = zodToJsonSchema(schema, { $refStrategy: 'none' });
+  const jsonSchema: Record<string, unknown> = z.toJSONSchema(schema, { target: 'draft-7' });
   delete jsonSchema.$schema;
   // Modelos pequenos (3B) respondem "[]" a qualquer array por ser o caminho de menor esforço;
   // com a gramática exigindo ao menos um item, o mesmo modelo extrai dezenas de requisitos
@@ -216,7 +224,7 @@ function repetitionGuard(): (chunk: string) => void {
     lastCheckedAt = content.length;
     if (hasRepetition(content)) {
       log.step(`ollama: loop de repetição detectado após ${content.length} chars; abortando e retentando`);
-      throw new Error(
+      throw new TransientError(
         'Ollama entrou em loop de repetição (mesmo trecho gerado mais de uma vez); geração abortada',
       );
     }
@@ -246,19 +254,28 @@ function hasRepeatedObject(content: string): boolean {
   return false;
 }
 
-function parseStream(raw: string): { content: string; doneReason?: string } {
-  let content = '';
-  let doneReason: string | undefined;
+interface ParsedStream {
+  content: string;
+  doneReason?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+function parseStream(raw: string): ParsedStream {
+  const parsed: ParsedStream = { content: '' };
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
     const chunk = JSON.parse(line) as OllamaChatChunk;
     if (chunk.error) {
       throw new Error(`Ollama: ${chunk.error}`);
     }
-    content += chunk.message?.content ?? '';
-    if (chunk.done && chunk.done_reason) {
-      doneReason = chunk.done_reason;
+    parsed.content += chunk.message?.content ?? '';
+    if (chunk.done) {
+      // O último chunk traz as contagens da geração inteira.
+      if (chunk.done_reason) parsed.doneReason = chunk.done_reason;
+      if (chunk.prompt_eval_count !== undefined) parsed.inputTokens = chunk.prompt_eval_count;
+      if (chunk.eval_count !== undefined) parsed.outputTokens = chunk.eval_count;
     }
   }
-  return doneReason === undefined ? { content } : { content, doneReason };
+  return parsed;
 }
