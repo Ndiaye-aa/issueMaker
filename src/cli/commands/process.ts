@@ -2,11 +2,10 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Command } from 'commander';
 import { createAIClient, logUsage, readBacklogBatchSize } from '../../ai/client-factory.js';
-import { buildBacklogForLayer } from '../../backlog/build-backlog.js';
+import { buildAndWriteBacklogs } from '../../backlog/build-backlog.js';
 import { extractRequirements } from '../../ingest/extract-requirements.js';
 import { parseSddFile } from '../../ingest/parsers.js';
 import { buildSprintPlan } from '../../plan/build-sprint-plan.js';
-import { renderBacklogMarkdown } from '../../render/backlog-markdown.js';
 import { log } from '../logger.js';
 import {
   DEFAULT_BUFFER,
@@ -66,14 +65,8 @@ export function registerProcessCommand(program: Command): void {
         await writeFile(planPath, JSON.stringify(sprintPlan, null, 2), 'utf-8');
         console.log(`${sprintPlan.sprints.length} sprint(s) planejado(s) → ${planPath}`);
 
-        for (const layer of ['frontend', 'backend'] as const) {
-          log.step(`etapa 3/3: backlog ${layer}`);
-          const items = await buildBacklogForLayer(layer, requirements, sprintPlan, aiClient, { batchSize });
-          const markdown = renderBacklogMarkdown(items);
-          const outPath = join(options.out, `backlog-${layer}.md`);
-          await writeFile(outPath, markdown, 'utf-8');
-          console.log(`${items.length} item(ns) de backlog (${layer}) → ${outPath}`);
-        }
+        log.step('etapa 3/3: backlog (frontend + backend)');
+        await buildAndWriteBacklogs(requirements, sprintPlan, aiClient, options.out, { batchSize });
       } finally {
         logUsage(aiClient);
       }

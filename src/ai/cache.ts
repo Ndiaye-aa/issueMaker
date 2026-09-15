@@ -3,7 +3,31 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { ZodType } from 'zod';
 import { z } from 'zod';
-import type { AIClient, CompletionRequest } from './provider.js';
+import { describeProvider, type AIClient, type AIProvider, type CompletionRequest } from './provider.js';
+
+/**
+ * Contrato opcional que `ResilientAIClient` implementa: permite ao cache saber, por
+ * chamada, qual provedor respondeu de fato (primário ou fallback), em vez de assumir
+ * sempre o mesmo provedor. Sem isso, uma troca para o fallback por estouro de cota
+ * gravaria a resposta sob a assinatura do primário — e uma reexecução futura, já com a
+ * cota restaurada, serviria do cache uma resposta de um modelo mais fraco sem nunca
+ * reconsultar o primário.
+ */
+interface ProviderAwareAIClient extends AIClient {
+  expectedProviderSignature(): string;
+  completeWithProvider<T>(
+    request: CompletionRequest,
+    schema: ZodType<T>,
+  ): Promise<{ result: T; provider: AIProvider }>;
+}
+
+function isProviderAware(client: AIClient): client is ProviderAwareAIClient {
+  const candidate = client as Partial<ProviderAwareAIClient>;
+  return (
+    typeof candidate.expectedProviderSignature === 'function' &&
+    typeof candidate.completeWithProvider === 'function'
+  );
+}
 
 /** Cliente que sabe resumir o que consumiu; é o que os comandos recebem da fábrica. */
 export interface ReportingAIClient extends AIClient {
@@ -50,22 +74,44 @@ export class CachedAIClient implements AIClient {
 
   async complete<T>(request: CompletionRequest, schema: ZodType<T>): Promise<T> {
     const schemaJson = z.toJSONSchema(schema, { target: 'draft-7' });
-    const key = createHash('sha256')
-      .update(JSON.stringify({ signature: this.signature, request, schema: schemaJson }))
-      .digest('hex');
-    const path = join(this.dir, key.slice(0, 2), `${key}.json`);
+    const aware = isProviderAware(this.inner) ? this.inner : undefined;
 
-    const cached = await this.read(path, schema);
+    const expectedSignature = aware ? aware.expectedProviderSignature() : this.signature;
+    const expected = this.keyFor(expectedSignature, request, schemaJson);
+    const cached = await this.read(expected.path, schema);
     if (cached !== undefined) {
       this.hits += 1;
-      this.log(`cache hit (${key.slice(0, 8)})`);
+      this.log(`cache hit (${expected.key.slice(0, 8)})`);
       return cached;
     }
 
     this.misses += 1;
-    const response = await this.inner.complete(request, schema);
-    await this.write(path, { createdAt: new Date().toISOString(), request, response });
+    // Não usa `expectedSignature` para gravar: se essa chamada acabou trocando de
+    // provedor no meio do caminho (ex.: primário estourou cota agora), a resposta é do
+    // fallback — grava sob a assinatura de quem realmente respondeu.
+    let response: T;
+    let actualSignature = this.signature;
+    if (aware) {
+      const outcome = await aware.completeWithProvider(request, schema);
+      response = outcome.result;
+      actualSignature = describeProvider(outcome.provider);
+    } else {
+      response = await this.inner.complete(request, schema);
+    }
+    const actual = this.keyFor(actualSignature, request, schemaJson);
+    await this.write(actual.path, { createdAt: new Date().toISOString(), request, response });
     return response;
+  }
+
+  private keyFor(
+    signature: string,
+    request: CompletionRequest,
+    schemaJson: unknown,
+  ): { key: string; path: string } {
+    const key = createHash('sha256')
+      .update(JSON.stringify({ signature, request, schema: schemaJson }))
+      .digest('hex');
+    return { key, path: join(this.dir, key.slice(0, 2), `${key}.json`) };
   }
 
   private async read<T>(path: string, schema: ZodType<T>): Promise<T | undefined> {

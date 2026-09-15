@@ -2,9 +2,13 @@ import type { BacklogItem } from '../schemas/backlog-item.js';
 import type { SprintPlan } from '../schemas/sprint-plan.js';
 import { log } from '../cli/logger.js';
 import { renderDependency } from '../render/backlog-markdown.js';
+import { mapWithConcurrency } from '../util/concurrency.js';
 import { sortTopologically } from './dependency-order.js';
 import type { GithubIssueRef } from './github.js';
 import { BOT_LABEL, formatLabel, NEEDS_CLARIFICATION_STATUS } from './labels.js';
+
+/** Fechar issues/criar labels não tem relação de ordem entre si; limite conservador frente ao secondary rate limit do GitHub REST. */
+const GITHUB_INDEPENDENT_CALLS_CONCURRENCY = 5;
 
 export const SDD_BOT_LABEL = BOT_LABEL;
 
@@ -95,12 +99,12 @@ export async function publishBacklog(
   let alreadyPublishedTitles = new Set<string>();
   const existing = await publisher.listOpenIssuesWithLabel(SDD_BOT_LABEL);
   if (options.mode === 'replace') {
-    for (const issue of existing) {
-      if (!options.dryRun) {
-        await publisher.closeIssue(issue.number);
-      }
-      result.closed.push(issue);
+    if (!options.dryRun) {
+      await mapWithConcurrency(existing, GITHUB_INDEPENDENT_CALLS_CONCURRENCY, (issue) =>
+        publisher.closeIssue(issue.number),
+      );
     }
+    result.closed.push(...existing);
   } else {
     alreadyPublishedTitles = new Set(existing.map((issue) => issue.title));
     for (const issue of existing) {

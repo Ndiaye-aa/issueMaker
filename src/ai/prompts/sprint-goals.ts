@@ -18,7 +18,6 @@ export const SprintGoalsSchema = z.object({
     }),
   ),
 });
-export type SprintGoals = z.infer<typeof SprintGoalsSchema>;
 
 const SYSTEM_PROMPT = `Você é um gerente técnico de projeto. Para cada sprint recebida, escreva o "goal": 1 ou 2
 frases descrevendo o resultado demonstrável de ponta a ponta que a sprint entrega, com base

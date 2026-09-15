@@ -1,9 +1,7 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, readFile } from 'node:fs/promises';
 import type { Command } from 'commander';
 import { createAIClient, logUsage, readBacklogBatchSize } from '../../ai/client-factory.js';
-import { buildBacklogForLayer } from '../../backlog/build-backlog.js';
-import { renderBacklogMarkdown } from '../../render/backlog-markdown.js';
+import { buildAndWriteBacklogs } from '../../backlog/build-backlog.js';
 import { RequirementArraySchema } from '../../schemas/requirement.js';
 import { SprintPlanSchema } from '../../schemas/sprint-plan.js';
 
@@ -28,13 +26,7 @@ export function registerBacklogCommand(program: Command): void {
       await mkdir(options.out, { recursive: true });
 
       try {
-        for (const layer of ['frontend', 'backend'] as const) {
-          const items = await buildBacklogForLayer(layer, requirements, sprintPlan, aiClient, { batchSize });
-          const markdown = renderBacklogMarkdown(items);
-          const outPath = join(options.out, `backlog-${layer}.md`);
-          await writeFile(outPath, markdown, 'utf-8');
-          console.log(`${items.length} item(ns) de backlog (${layer}) → ${outPath}`);
-        }
+        await buildAndWriteBacklogs(requirements, sprintPlan, aiClient, options.out, { batchSize });
       } finally {
         logUsage(aiClient);
       }

@@ -1,6 +1,9 @@
+import { join } from 'node:path';
+import { writeFile } from 'node:fs/promises';
 import type { AIClient } from '../ai/provider.js';
 import { buildBacklogBatchRequest, buildBacklogRequest } from '../ai/prompts/backlog.js';
 import { log } from '../cli/logger.js';
+import { renderBacklogMarkdown } from '../render/backlog-markdown.js';
 import {
   BacklogItemArraySchema,
   BacklogItemBatchDraftSchema,
@@ -94,6 +97,46 @@ export async function buildBacklogForLayer(
     log.warn(`backlog ${layer}: ciclo de dependências entre requisitos (${cycle.join(' → ')}); o publish vai recusar até ser corrigido em requirements.json.`);
   }
   return BacklogItemArraySchema.parse(items);
+}
+
+export interface BacklogByLayer {
+  frontend: BacklogItem[];
+  backend: BacklogItem[];
+}
+
+/**
+ * Gera e grava backlog-frontend.md e backlog-backend.md em `outDir`. As duas camadas
+ * filtram requisitos disjuntos e não compartilham estado, então rodam em paralelo — o
+ * rate-limit real já é controlado pelo cliente de IA (semáforo por provedor), não por
+ * quem chama, então isso não aumenta a concorrência efetiva, só evita ficar ocioso
+ * entre o fim de uma camada e o início da outra.
+ */
+export async function buildAndWriteBacklogs(
+  requirements: Requirement[],
+  sprintPlan: SprintPlan,
+  aiClient: AIClient,
+  outDir: string,
+  options: BuildBacklogOptions = {},
+): Promise<BacklogByLayer> {
+  const [frontend, backend] = await Promise.all([
+    buildBacklogForLayer('frontend', requirements, sprintPlan, aiClient, options),
+    buildBacklogForLayer('backend', requirements, sprintPlan, aiClient, options),
+  ]);
+
+  await Promise.all(
+    (
+      [
+        ['frontend', frontend],
+        ['backend', backend],
+      ] as const
+    ).map(async ([layer, items]) => {
+      const outPath = join(outDir, `backlog-${layer}.md`);
+      await writeFile(outPath, renderBacklogMarkdown(items), 'utf-8');
+      console.log(`${items.length} item(ns) de backlog (${layer}) → ${outPath}`);
+    }),
+  );
+
+  return { frontend, backend };
 }
 
 async function runBatch(

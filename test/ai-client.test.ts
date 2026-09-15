@@ -295,4 +295,39 @@ describe('ResilientAIClient — usageReport', () => {
     const client = new ResilientAIClient(primary, undefined);
     expect(client.usageReport()).toEqual([]);
   });
+
+  describe('completeWithProvider / expectedProviderSignature', () => {
+    it('reporta o provedor principal numa chamada normal', async () => {
+      const primary = new FakeProvider('primary', [{ value: 1 }]);
+      const fallback = new FakeProvider('fallback', []);
+      const client = new ResilientAIClient(primary, fallback);
+
+      expect(client.expectedProviderSignature()).toBe('primary');
+      const outcome = await client.completeWithProvider(makeRequest(), schema);
+
+      expect(outcome.result).toEqual({ value: 1 });
+      expect(outcome.provider).toBe(primary);
+    });
+
+    it('reporta o fallback na chamada que sofre o rate limit e é redirecionada', async () => {
+      const primary = new FakeProvider('primary', [new RateLimitError('rate limit', 715_000)]);
+      const fallback = new FakeProvider('fallback', [{ value: 2 }]);
+      const client = new ResilientAIClient(primary, fallback, 3, 2, silentLog);
+
+      const outcome = await client.completeWithProvider(makeRequest(), schema);
+
+      expect(outcome.result).toEqual({ value: 2 });
+      expect(outcome.provider).toBe(fallback);
+    });
+
+    it('expectedProviderSignature reflete o fallback depois que o primário é fixado', async () => {
+      const primary = new FakeProvider('primary', [new RateLimitError('rate limit', 715_000)]);
+      const fallback = new FakeProvider('fallback', [{ value: 3 }]);
+      const client = new ResilientAIClient(primary, fallback, 3, 2, silentLog);
+
+      expect(client.expectedProviderSignature()).toBe('primary');
+      await client.completeWithProvider(makeRequest(), schema);
+      expect(client.expectedProviderSignature()).toBe('fallback');
+    });
+  });
 });

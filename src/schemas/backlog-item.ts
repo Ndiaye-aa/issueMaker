@@ -2,7 +2,6 @@ import { z } from 'zod';
 import { backlogQualityRules } from './backlog-quality.js';
 
 export const BacklogItemTypeSchema = z.enum(['feature', 'bug', 'tech-debt']);
-export type BacklogItemType = z.infer<typeof BacklogItemTypeSchema>;
 
 export const BacklogLayerSchema = z.enum(['frontend', 'backend']);
 export type BacklogLayer = z.infer<typeof BacklogLayerSchema>;

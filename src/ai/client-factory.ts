@@ -1,7 +1,7 @@
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 import { CachedAIClient, DEFAULT_CACHE_DIR, type ReportingAIClient } from './cache.js';
 import { ResilientAIClient } from './client.js';
-import type { AIProvider } from './provider.js';
+import { describeProvider, type AIProvider } from './provider.js';
 import {
   ClaudeCodeProvider,
   EFFORT_LEVELS,
@@ -129,9 +129,9 @@ export function createResilientAIClient(): ResilientAIClient {
   const primaryConcurrency = selection.primary === 'ollama' ? 1 : concurrency;
   const fallbackConcurrency = selection.fallback === 'ollama' ? 1 : concurrency;
 
-  const fallbackLabel = fallback ? `fallback ${describe(fallback)}` : 'sem fallback';
+  const fallbackLabel = fallback ? `fallback ${describeProvider(fallback)}` : 'sem fallback';
   log.step(
-    `provedores: ${describe(primary)} (até ${primaryConcurrency} chamada(s) simultânea(s)) → ${fallbackLabel}`,
+    `provedores: ${describeProvider(primary)} (até ${primaryConcurrency} chamada(s) simultânea(s)) → ${fallbackLabel}`,
   );
   return new ResilientAIClient(primary, fallback, 3, 8, console.error, {
     primary: primaryConcurrency,
@@ -148,7 +148,7 @@ export function createAIClient(options: AIClientOptions = {}): ReportingAIClient
   }
   const dir = process.env.SDD_BOT_CACHE_DIR || DEFAULT_CACHE_DIR;
   const primary = (resilient as unknown as { primary: AIProvider }).primary;
-  const signature = describe(primary);
+  const signature = describeProvider(primary);
   log.step(`cache de respostas em ${dir} (desligue com --no-cache ou SDD_BOT_CACHE=0)`);
   return new CachedAIClient(resilient, dir, signature, (message) => log.step(message));
 }
@@ -167,10 +167,6 @@ export function readBacklogBatchSize(env: NodeJS.ProcessEnv = process.env): numb
   const configured = readPositiveInt(env.BACKLOG_BATCH_SIZE) ?? DEFAULT_BACKLOG_BATCH_SIZE;
   const primary = readProviderSelection(env).primary;
   return primary === 'ollama' ? 1 : configured;
-}
-
-function describe(provider: AIProvider): string {
-  return provider.model ? `${provider.name}=${provider.model}` : provider.name;
 }
 
 function readPositiveInt(raw: string | undefined): number | undefined {

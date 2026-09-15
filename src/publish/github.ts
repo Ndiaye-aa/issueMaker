@@ -1,8 +1,12 @@
 import { Octokit } from 'octokit';
 import type { BacklogItem } from '../schemas/backlog-item.js';
 import { parseRequirementIdsFromBody, renderBacklogItemMarkdown } from '../render/backlog-markdown.js';
+import { mapWithConcurrency } from '../util/concurrency.js';
 import { getLabelColor } from './labels.js';
 import type { MilestoneSpec } from './publish-backlog.js';
+
+/** Criar/atualizar labels não tem relação de ordem entre si; limite conservador frente ao secondary rate limit do GitHub REST. */
+const INDEPENDENT_CALLS_CONCURRENCY = 5;
 
 export interface GithubIssueRef {
   number: number;
@@ -60,7 +64,7 @@ export class GithubPublisher {
     });
     const colorByName = new Map(existing.map((label) => [label.name, label.color.toUpperCase()]));
 
-    for (const label of labels) {
+    await mapWithConcurrency(labels, INDEPENDENT_CALLS_CONCURRENCY, async (label) => {
       const color = getLabelColor(label);
       const current = colorByName.get(label);
       if (current === undefined) {
@@ -78,7 +82,7 @@ export class GithubPublisher {
           color,
         });
       }
-    }
+    });
   }
 
   async closeIssue(issueNumber: number): Promise<void> {

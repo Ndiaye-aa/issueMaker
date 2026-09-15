@@ -1,7 +1,7 @@
 import type { ZodType } from 'zod';
 import { z } from 'zod';
 import type { AIClient, AIProvider, CompletionRequest } from './provider.js';
-import { formatUsage, isRateLimitError, isTransientError } from './provider.js';
+import { describeProvider, formatUsage, isRateLimitError, isTransientError } from './provider.js';
 import { Semaphore } from '../util/concurrency.js';
 
 /**
@@ -52,20 +52,37 @@ export class ResilientAIClient implements AIClient {
   }
 
   async complete<T>(request: CompletionRequest, schema: ZodType<T>): Promise<T> {
+    return (await this.completeWithProvider(request, schema)).result;
+  }
+
+  /**
+   * Qual provedor a próxima chamada provavelmente vai usar, sem pagar o custo dela —
+   * usado pelo cache para uma leitura otimista antes de decidir se chama de fato.
+   */
+  expectedProviderSignature(): string {
+    return describeProvider(this.primaryTripped && this.fallback ? this.fallback : this.primary);
+  }
+
+  /** Como `complete`, mas também diz qual provedor de fato respondeu (para o cache gravar sob a chave certa). */
+  async completeWithProvider<T>(
+    request: CompletionRequest,
+    schema: ZodType<T>,
+  ): Promise<{ result: T; provider: AIProvider }> {
     const fallback = this.fallback;
     if (this.primaryTripped && fallback) {
-      return this.runOnFallback(fallback, request, schema);
+      return { result: await this.runOnFallback(fallback, request, schema), provider: fallback };
     }
     try {
-      return await this.primarySlots.run(() =>
+      const result = await this.primarySlots.run(() =>
         this.withRateLimitRetry(this.primary, request, schema),
       );
+      return { result, provider: this.primary };
     } catch (err) {
       if (!isRateLimitError(err) || !fallback) {
         throw err;
       }
       this.tripPrimary(fallback, err.retryAfterMs);
-      return this.runOnFallback(fallback, request, schema);
+      return { result: await this.runOnFallback(fallback, request, schema), provider: fallback };
     }
   }
 

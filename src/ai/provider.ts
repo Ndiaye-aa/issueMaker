@@ -84,6 +84,11 @@ export interface AIProvider {
   complete<T>(request: CompletionRequest, schema: ZodType<T>): Promise<unknown>;
 }
 
+/** Identifica um provedor de forma estável para fins de log e de chave de cache. */
+export function describeProvider(provider: AIProvider): string {
+  return provider.model ? `${provider.name}=${provider.model}` : provider.name;
+}
+
 /** Contrato mínimo que o pipeline usa; implementado pelo cliente resiliente e pelo cache. */
 export interface AIClient {
   complete<T>(request: CompletionRequest, schema: ZodType<T>): Promise<T>;
