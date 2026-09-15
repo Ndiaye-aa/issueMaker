@@ -245,4 +245,15 @@ describe('toOutputSchema / classifyFailure', () => {
     expect(classifyFailure('Invalid API key')).not.toBeInstanceOf(TransientError);
     expect(classifyFailure('Failed to spawn Claude Code process')).toBeInstanceOf(TransientError);
   });
+
+  it('classifica cota de uso esgotada (fora dos padrões de rate limit) como RateLimitError', () => {
+    expect(classifyFailure("You're out of usage credits")).toBeInstanceOf(RateLimitError);
+    expect(classifyFailure('Your usage allocation has been disabled by your admin')).toBeInstanceOf(
+      RateLimitError,
+    );
+    expect(classifyFailure('Your org is out of usage · add funds to continue')).toBeInstanceOf(
+      RateLimitError,
+    );
+    expect(classifyFailure('algo deu errado', 'budget_exhausted')).toBeInstanceOf(RateLimitError);
+  });
 });

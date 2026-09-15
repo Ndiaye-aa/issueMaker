@@ -8,7 +8,14 @@ import { parseSddFile } from '../../ingest/parsers.js';
 import { buildSprintPlan } from '../../plan/build-sprint-plan.js';
 import { renderBacklogMarkdown } from '../../render/backlog-markdown.js';
 import { log } from '../logger.js';
-import { DEFAULT_BUFFER, DEFAULT_MAX_PER_SPRINT, parseCapacity, parseMaxPerSprint, parseStartDate } from './options.js';
+import {
+  DEFAULT_BUFFER,
+  DEFAULT_MAX_PER_SPRINT,
+  DEFAULT_SPRINT_LENGTH,
+  parseCapacity,
+  parseMaxPerSprint,
+  parseStartDate,
+} from './options.js';
 
 interface ProcessOptions {
   file: string;
@@ -28,7 +35,7 @@ export function registerProcessCommand(program: Command): void {
       'Executa analyze + plan + backlog em um único passo, a partir de um SDD (.md/.docx/.pdf)',
     )
     .requiredOption('--file <path>', 'caminho do arquivo SDD de entrada')
-    .requiredOption('--sprint-length <duration>', 'duração de cada sprint (ex: "2 semanas")')
+    .option('--sprint-length <duration>', 'duração de cada sprint (ex: "2 semanas")', DEFAULT_SPRINT_LENGTH)
     .option('--out <dir>', 'diretório de saída para os arquivos gerados', './out')
     .option('--max-per-sprint <n>', 'teto de requisitos por sprint', String(DEFAULT_MAX_PER_SPRINT))
     .option('--capacity <pontos>', 'capacidade nominal por sprint em pontos de esforço (default: 1 ponto por dia do sprint)')

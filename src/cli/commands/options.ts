@@ -3,6 +3,7 @@ import type { SprintCapacity } from '../../plan/effort.js';
 
 export const DEFAULT_MAX_PER_SPRINT = 20;
 export const DEFAULT_BUFFER = 0.75;
+export const DEFAULT_SPRINT_LENGTH = '2 semanas';
 
 export function parseMaxPerSprint(raw: string): number {
   const value = Number(raw);

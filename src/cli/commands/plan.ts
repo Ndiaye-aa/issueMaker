@@ -4,7 +4,14 @@ import type { Command } from 'commander';
 import { createAIClient, logUsage } from '../../ai/client-factory.js';
 import { buildSprintPlan } from '../../plan/build-sprint-plan.js';
 import { RequirementArraySchema } from '../../schemas/requirement.js';
-import { DEFAULT_BUFFER, DEFAULT_MAX_PER_SPRINT, parseCapacity, parseMaxPerSprint, parseStartDate } from './options.js';
+import {
+  DEFAULT_BUFFER,
+  DEFAULT_MAX_PER_SPRINT,
+  DEFAULT_SPRINT_LENGTH,
+  parseCapacity,
+  parseMaxPerSprint,
+  parseStartDate,
+} from './options.js';
 
 interface PlanOptions {
   in: string;
@@ -22,7 +29,7 @@ export function registerPlanCommand(program: Command): void {
     .command('plan')
     .description('Organiza requisitos extraídos em sprints, respeitando dependências')
     .requiredOption('--in <path>', 'caminho do requirements.json de entrada')
-    .requiredOption('--sprint-length <duration>', 'duração de cada sprint (ex: "2 semanas")')
+    .option('--sprint-length <duration>', 'duração de cada sprint (ex: "2 semanas")', DEFAULT_SPRINT_LENGTH)
     .option('--out <path>', 'caminho do sprint-plan.json de saída', './out/sprint-plan.json')
     .option('--max-per-sprint <n>', 'teto de requisitos por sprint', String(DEFAULT_MAX_PER_SPRINT))
     .option('--capacity <pontos>', 'capacidade nominal por sprint em pontos de esforço (default: 1 ponto por dia do sprint)')

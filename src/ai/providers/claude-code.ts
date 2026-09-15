@@ -1,5 +1,5 @@
 import { tmpdir } from 'node:os';
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query, USAGE_LIMIT_ERROR_PREFIXES } from '@anthropic-ai/claude-agent-sdk';
 import type {
   EffortLevel,
   Options,
@@ -41,7 +41,16 @@ export interface ClaudeCodeProviderOptions {
 
 const RATE_LIMIT_PATTERN = /rate limit|usage limit|limit reached|overloaded|too many requests|\b429\b/i;
 const AUTH_PATTERN = /not logged in|invalid api key|authentication|unauthorized|\b401\b/i;
-const RATE_LIMIT_TERMINAL_REASONS = new Set(['blocking_limit', 'rapid_refill_breaker']);
+const RATE_LIMIT_TERMINAL_REASONS = new Set(['blocking_limit', 'rapid_refill_breaker', 'budget_exhausted']);
+/**
+ * Mensagens de "limite de uso genuinamente atingido" que o próprio SDK reconhece (créditos
+ * esgotados, alocação zerada pelo admin etc.) mas que não batem no RATE_LIMIT_PATTERN acima
+ * — sem isso, ficar sem cota vira TransientError e o pipeline nunca migra para o fallback.
+ */
+const USAGE_LIMIT_PATTERN = new RegExp(
+  USAGE_LIMIT_ERROR_PREFIXES.map((prefix) => escapeRegExp(prefix)).join('|'),
+  'i',
+);
 
 /**
  * Claude pela própria máquina: o Agent SDK embute o binário do Claude Code e o roda como
@@ -207,8 +216,16 @@ export function toOutputSchema(schema: ZodType<unknown>): {
   return { jsonSchema, wrapped: false };
 }
 
+function escapeRegExp(raw: string): string {
+  return raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export function classifyFailure(message: string, terminalReason?: string): Error {
-  if ((terminalReason && RATE_LIMIT_TERMINAL_REASONS.has(terminalReason)) || RATE_LIMIT_PATTERN.test(message)) {
+  if (
+    (terminalReason && RATE_LIMIT_TERMINAL_REASONS.has(terminalReason)) ||
+    RATE_LIMIT_PATTERN.test(message) ||
+    USAGE_LIMIT_PATTERN.test(message)
+  ) {
     return new RateLimitError(`claude-code: ${message}`);
   }
   if (AUTH_PATTERN.test(message)) {
