@@ -20,12 +20,12 @@ cp .env.example .env
 Tudo é definido no `.env`. `AI_PRIMARY` é quem responde; `AI_FALLBACK` assume o restante do
 pipeline quando o principal devolve rate limit ou cota esgotada (`none` desliga).
 
-| Provedor      | O que é                                                                 | Variáveis                                                    |
-| ------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `claude-code` | Claude pela própria máquina (Agent SDK com binário do Claude Code embutido). Usa o login já feito no Claude Code; sem chave no `.env` | `CLAUDE_MODEL` (default `claude-sonnet-5`), `CLAUDE_LIGHT_MODEL` (decisões mecânicas, default `claude-haiku-4-5-20251001`), `CLAUDE_EFFORT`/`CLAUDE_THINKING` (raciocínio, default `low`/`disabled`), `CLAUDE_TIMEOUT_MS`, `ANTHROPIC_API_KEY` opcional |
-| `groq`        | Camada gratuita da Groq                                                 | `GROQ_API_KEY`, `GROQ_MODEL`                                 |
-| `openai`      | Qualquer API compatível com a OpenAI (OpenAI, OpenRouter, Together...) | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`          |
-| `ollama`      | Modelo local, sem chave                                                 | `OLLAMA_BASE_URL`, `OLLAMA_MODEL`                            |
+| Provedor        | O que é                                                                                                                                   | Variáveis                                                                                                                                                                                                                                                                     |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `claude-code` | Claude pela própria máquina (Agent SDK com binário do Claude Code embutido). Usa o login já feito no Claude Code; sem chave no`.env` | `CLAUDE_MODEL` (default `claude-sonnet-5`), `CLAUDE_LIGHT_MODEL` (decisões mecânicas, default `claude-haiku-4-5-20251001`), `CLAUDE_EFFORT`/`CLAUDE_THINKING` (raciocínio, default `low`/`disabled`), `CLAUDE_TIMEOUT_MS`, `ANTHROPIC_API_KEY` opcional |
+| `groq`        | Camada gratuita da Groq                                                                                                                    | `GROQ_API_KEY`, `GROQ_MODEL`                                                                                                                                                                                                                                               |
+| `openai`      | Qualquer API compatível com a OpenAI (OpenAI, OpenRouter, Together...)                                                                    | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`                                                                                                                                                                                                                      |
+| `ollama`      | Modelo local, sem chave                                                                                                                    | `OLLAMA_BASE_URL`, `OLLAMA_MODEL`                                                                                                                                                                                                                                          |
 
 Receitas:
 
@@ -57,13 +57,13 @@ npm run dev -- --help
 
 ## Comandos
 
-| Comando                                                                                 | Descrição                                                              |
-| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `sdd-bot process --file <sdd> --sprint-length <duração> [--out <dir>] [--max-per-sprint <n>] [--capacity <pontos>] [--buffer <fração>] [--start-date <YYYY-MM-DD>] [--no-cache]` | Pipeline completo (analyze + plan + backlog) → JSONs intermediários + `.md` por camada |
-| `sdd-bot publish --backlog <path...> --repo <org/repo> [--sprint-plan <path>] [--mode add\|replace] [--dry-run]` | Publicação de issues no GitHub (ordem topológica, labels por dimensão, milestones por sprint) |
-| `sdd-bot analyze --file <path> [--out <path>]`                                        | (uso granular) Ingest + extração de requisitos →`requirements.json` |
-| `sdd-bot plan --in <requirements.json> --sprint-length <duração> [--out <path>] [--max-per-sprint <n>] [--capacity <pontos>] [--buffer <fração>] [--start-date <YYYY-MM-DD>]` | (uso granular) Planejamento →`sprint-plan.json`                       |
-| `sdd-bot backlog --in <requirements.json> --plan <sprint-plan.json> [--out <dir>]`    | (uso granular) Geração de backlog →`.md` por camada                 |
+| Comando                                                                                                                                                                                | Descrição                                                                                       |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `sdd-bot process --file <sdd> --sprint-length <duração> [--out <dir>] [--max-per-sprint <n>] [--capacity <pontos>] [--buffer <fração>] [--start-date <YYYY-MM-DD>] [--no-cache]` | Pipeline completo (analyze + plan + backlog) → JSONs intermediários +`.md` por camada         |
+| `sdd-bot publish --backlog <path...> --repo <org/repo> [--sprint-plan <path>] [--mode add\|replace] [--dry-run]`                                                                      | Publicação de issues no GitHub (ordem topológica, labels por dimensão, milestones por sprint) |
+| `sdd-bot analyze --file <path> [--out <path>]`                                                                                                                                       | (uso granular) Ingest + extração de requisitos →`requirements.json`                          |
+| `sdd-bot plan --in <requirements.json> --sprint-length <duração> [--out <path>] [--max-per-sprint <n>] [--capacity <pontos>] [--buffer <fração>] [--start-date <YYYY-MM-DD>]`    | (uso granular) Planejamento →`sprint-plan.json`                                                |
+| `sdd-bot backlog --in <requirements.json> --plan <sprint-plan.json> [--out <dir>]`                                                                                                   | (uso granular) Geração de backlog →`.md` por camada                                          |
 
 `process` roda a mesma sequência de `analyze` → `plan` → `backlog` em um único passo e grava
 também os intermediários (`requirements.json`, `sprint-plan.json`) no diretório de saída, para
@@ -90,8 +90,7 @@ quiser editar os artefatos intermediários manualmente entre uma etapa e outra.
   (`xs`/`s`/`m`/`l`/`xl` → 1/2/3/5/8 pontos). A capacidade nominal por sprint vem de
   `--capacity` (default: 1 ponto por dia de `--sprint-length`, ou seja, `"2 semanas"` → 14)
   e `--buffer` (default `0.75`) reserva folga para imprevistos; a capacidade efetiva é
-  `floor(capacity × buffer)` e o número mínimo de sprints é `ceil(esforço total ÷ capacidade
-  efetiva)`. Esses números vão para o prompt de planejamento.
+  `floor(capacity × buffer)` e o número mínimo de sprints é `ceil(esforço total ÷ capacidade efetiva)`. Esses números vão para o prompt de planejamento.
 - **Distribuição determinística:** modelos tendem a colocar tudo no sprint 1. Depois da
   validação de dependências, uma sprint que passe da capacidade em pontos **ou** de
   `--max-per-sprint` (default 20) transborda para a seguinte: saem primeiro os `could`,
@@ -102,8 +101,9 @@ quiser editar os artefatos intermediários manualmente entre uma etapa e outra.
 - **Auditoria do plano:** o `sprint-plan.json` ganha `warnings` (também no stderr) para:
   goal genérico, carga desbalanceada (uma sprint > 130% da média das outras, ou diferença
   > 50% entre a mais cheia e a mais vazia), sprint sobrecarregada ou subutilizada, sprint só
-  de `could` com `must` pendente adiante sem dependência que justifique, e dependência
-  violada. O resumo `Sprint N: X pts / Y (Z%) — k requisito(s)` sai no stderr.
+  > de `could` com `must` pendente adiante sem dependência que justifique, e dependência
+  > violada. O resumo `Sprint N: X pts / Y (Z%) — k requisito(s)` sai no stderr.
+  >
 - **Datas:** com `--start-date` (default: hoje) e uma duração reconhecível em
   `--sprint-length` ("2 semanas", "10 dias", "3w"), cada sprint recebe `startDate`/`dueDate`
   sequenciais e sem sobreposição, usados como due date dos milestones.
@@ -170,14 +170,14 @@ Label responde "o quê" (categoria atemporal); milestone responde "quando" (jane
   dimensão e no formato `dimensão: valor`, para permitir filtros combinados (`AND`) e cores por
   família:
 
-  | Dimensão   | Origem                                   | Valores                                | Cor                |
-  | ---------- | ---------------------------------------- | -------------------------------------- | ------------------ |
-  | `type`     | `BacklogItem.type`                       | `feature`, `bug`, `tech-debt`          | família azul       |
-  | `layer`    | `BacklogItem.layer`                      | `frontend`, `backend`                  | família roxa       |
-  | `priority` | calculada dos requisitos de origem       | `must`, `should`, `could`              | vermelho → laranja |
-  | `area`     | seção do SDD de onde veio o requisito    | slug da seção (sem numeração)          | tons de verde      |
-  | `status`   | `technicalSpecificity.needsClarification`| `needs-clarification` (só quando true) | amarelo            |
-  | —          | marcador do bot                          | `sdd-bot`                              | cinza              |
+  | Dimensão    | Origem                                      | Valores                                   | Cor                 |
+  | ------------ | ------------------------------------------- | ----------------------------------------- | ------------------- |
+  | `type`     | `BacklogItem.type`                        | `feature`, `bug`, `tech-debt`       | família azul       |
+  | `layer`    | `BacklogItem.layer`                       | `frontend`, `backend`                 | família roxa       |
+  | `priority` | calculada dos requisitos de origem          | `must`, `should`, `could`           | vermelho → laranja |
+  | `area`     | seção do SDD de onde veio o requisito     | slug da seção (sem numeração)         | tons de verde       |
+  | `status`   | `technicalSpecificity.needsClarification` | `needs-clarification` (só quando true) | amarelo             |
+  | —           | marcador do bot                             | `sdd-bot`                               | cinza               |
 
   Não existe mais `sprint-N` (é milestone) nem label livre gerada pelo modelo. Em cada
   `publish`, labels ausentes são criadas e as existentes têm a cor alinhada à paleta.
@@ -202,14 +202,14 @@ node dist/cli/index.js backlog --in ./out/requirements.json --plan ./out/sprint-
 
 ## Variáveis de ambiente
 
-| Variável           | Obrigatória para                                           | Descrição                                                          |
-| ------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------- |
-| `GROQ_API_KEY`    | `process` (ou `analyze`/`plan`/`backlog`)           | Provedor principal de IA (camada gratuita do Groq)                   |
-| `OLLAMA_BASE_URL` | `process` (ou `analyze`/`plan`/`backlog`, opcional) | URL do Ollama local (default `http://localhost:11434`)               |
-| `OLLAMA_MODEL`    | `process` (ou `analyze`/`plan`/`backlog`, opcional) | Modelo do fallback local (default `qwen2.5:3b-instruct`; `ollama pull` antes) |
-| `BACKLOG_BATCH_SIZE` | opcional | Requisitos por chamada de geração de backlog (default 4; forçado a 1 no Ollama) |
-| `CLAUDE_LIGHT_MODEL` | opcional | Modelo para decisões mecânicas do `claude-code` (default `claude-haiku-4-5-20251001`) |
-| `CLAUDE_EFFORT` / `CLAUDE_THINKING` | opcional | Esforço de raciocínio do `claude-code` (default `low` / `disabled`) |
+| Variável                               | Obrigatória para                                           | Descrição                                                                                |
+| --------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `GROQ_API_KEY`                        | `process` (ou `analyze`/`plan`/`backlog`)           | Provedor principal de IA (camada gratuita do Groq)                                         |
+| `OLLAMA_BASE_URL`                     | `process` (ou `analyze`/`plan`/`backlog`, opcional) | URL do Ollama local (default`http://localhost:11434`)                                    |
+| `OLLAMA_MODEL`                        | `process` (ou `analyze`/`plan`/`backlog`, opcional) | Modelo do fallback local (default`qwen2.5:3b-instruct`; `ollama pull` antes)           |
+| `BACKLOG_BATCH_SIZE`                  | opcional                                                    | Requisitos por chamada de geração de backlog (default 4; forçado a 1 no Ollama)         |
+| `CLAUDE_LIGHT_MODEL`                  | opcional                                                    | Modelo para decisões mecânicas do`claude-code` (default `claude-haiku-4-5-20251001`) |
+| `CLAUDE_EFFORT` / `CLAUDE_THINKING` | opcional                                                    | Esforço de raciocínio do`claude-code` (default `low` / `disabled`)                 |
 
 | `GITHUB_TOKEN`    | `publish`                                                 | Token com permissão de escrita em issues no repositório de destino |
 
