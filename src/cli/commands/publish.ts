@@ -48,12 +48,14 @@ export function registerPublishCommand(program: Command): void {
       }
 
       const publisher = new GithubPublisher(token, owner, repo);
+      const startedAt = Date.now();
       const result = await publishBacklog(
         items,
         publisher,
         { mode: options.mode, dryRun: options.dryRun },
         sprintPlan,
       );
+      const elapsedSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
 
       const prefix = options.dryRun ? '[dry-run] ' : '';
       for (const issue of result.closed) {
@@ -71,7 +73,7 @@ export function registerPublishCommand(program: Command): void {
         console.log(`${prefix}milestone concluído e fechado: ${milestone}`);
       }
       console.log(
-        `${prefix}${result.closed.length} issue(ns) fechada(s), ${result.created.length} issue(ns) criada(s), ${result.skipped.length} ignorada(s), ${result.closedMilestones.length} milestone(s) fechado(s)`,
+        `${prefix}${result.closed.length} issue(ns) fechada(s), ${result.created.length} issue(ns) criada(s), ${result.skipped.length} ignorada(s), ${result.closedMilestones.length} milestone(s) fechado(s) em ${elapsedSeconds}s`,
       );
     });
 }

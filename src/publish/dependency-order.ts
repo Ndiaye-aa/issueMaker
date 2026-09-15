@@ -7,10 +7,7 @@ import type { BacklogItem } from '../schemas/backlog-item.js';
  * Dependências fora do conjunto (outra camada já publicada, ou não publicada) não bloqueiam.
  */
 export function sortTopologically(items: BacklogItem[]): BacklogItem[] {
-  const cycle = findDependencyCycle(items);
-  if (cycle) {
-    throw new Error(`ciclo de dependências entre requisitos: ${cycle.join(' → ')}. Corrija "dependencies" em requirements.json antes de publicar.`);
-  }
+  assertAcyclic(items);
 
   const ownerByRequirement = ownersByRequirementId(items);
   const pending = [...items];
@@ -26,6 +23,45 @@ export function sortTopologically(items: BacklogItem[]): BacklogItem[] {
   }
 
   return ordered;
+}
+
+/**
+ * Agrupa em camadas: cada camada só depende de itens de camadas anteriores, então dois itens
+ * da mesma camada nunca dependem um do outro e podem ser publicados em paralelo (Sprint de
+ * otimização — criação de issues deixa de ser uma chamada por vez). Dentro de cada camada, a
+ * ordem relativa original é preservada.
+ */
+export function topologicalLayers(items: BacklogItem[]): BacklogItem[][] {
+  assertAcyclic(items);
+
+  const ownerByRequirement = ownersByRequirementId(items);
+  let pending = [...items];
+  const emitted = new Set<BacklogItem>();
+  const layers: BacklogItem[][] = [];
+
+  while (pending.length > 0) {
+    const ready: BacklogItem[] = [];
+    const blocked: BacklogItem[] = [];
+    for (const item of pending) {
+      if (internalDependencies(item, ownerByRequirement).every((dep) => emitted.has(dep))) {
+        ready.push(item);
+      } else {
+        blocked.push(item);
+      }
+    }
+    for (const item of ready) emitted.add(item);
+    layers.push(ready);
+    pending = blocked;
+  }
+
+  return layers;
+}
+
+function assertAcyclic(items: BacklogItem[]): void {
+  const cycle = findDependencyCycle(items);
+  if (cycle) {
+    throw new Error(`ciclo de dependências entre requisitos: ${cycle.join(' → ')}. Corrija "dependencies" em requirements.json antes de publicar.`);
+  }
 }
 
 /**

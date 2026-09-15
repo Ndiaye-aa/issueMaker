@@ -308,4 +308,16 @@ describe('publishBacklog — dependências em ordem topológica', () => {
       { title: screen.title, dependsOn: ['REQ-5'] },
     ]);
   });
+
+  it('itens independentes (mesma camada) são todos criados e o resultado preserva a ordem original', async () => {
+    const publisher = sequentialPublisher();
+    const first = makeItem({ id: 'BL-010', title: 'Item independente 1', requirementIds: ['REQ-20'] });
+    const second = makeItem({ id: 'BL-011', title: 'Item independente 2', requirementIds: ['REQ-21'] });
+
+    const result = await publishBacklog([first, second], publisher, { mode: 'add', dryRun: false });
+
+    expect(publisher.createIssue).toHaveBeenCalledTimes(2);
+    expect(publisher.createIssue.mock.calls.map(([item]) => item.id)).toEqual(['BL-010', 'BL-011']);
+    expect(result.created.map((created) => created.title)).toEqual([first.title, second.title]);
+  });
 });

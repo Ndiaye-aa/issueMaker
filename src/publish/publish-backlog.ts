@@ -3,12 +3,20 @@ import type { SprintPlan } from '../schemas/sprint-plan.js';
 import { log } from '../cli/logger.js';
 import { renderDependency } from '../render/backlog-markdown.js';
 import { mapWithConcurrency } from '../util/concurrency.js';
-import { sortTopologically } from './dependency-order.js';
+import { sortTopologically, topologicalLayers } from './dependency-order.js';
 import type { GithubIssueRef } from './github.js';
 import { BOT_LABEL, formatLabel, NEEDS_CLARIFICATION_STATUS } from './labels.js';
 
 /** Fechar issues/criar labels não tem relação de ordem entre si; limite conservador frente ao secondary rate limit do GitHub REST. */
 const GITHUB_INDEPENDENT_CALLS_CONCURRENCY = 5;
+
+/**
+ * Criar issue é escrita de conteúdo (não só metadado como label/close); o GitHub recomenda
+ * evitar rajadas nesses endpoints para não acionar o secondary rate limit, daí um limite menor
+ * que `GITHUB_INDEPENDENT_CALLS_CONCURRENCY`. Aplica-se só dentro de uma camada topológica —
+ * itens de camadas diferentes continuam estritamente em ordem.
+ */
+const ISSUE_CREATE_CONCURRENCY = 3;
 
 export const SDD_BOT_LABEL = BOT_LABEL;
 
@@ -138,22 +146,39 @@ export async function publishBacklog(
     milestoneBySprint = await publisher.ensureMilestonesExist(milestoneSpecs(sprintNumbers, sprintPlan));
   }
 
-  for (const item of itemsToCreate) {
-    const labels = labelsForItem(item);
-    const dependsOn = item.dependsOn.map((id) => renderDependency(id, { issueNumberByRequirementId }));
-    if (options.dryRun) {
-      result.created.push({ title: item.title, dependsOn: item.dependsOn });
-    } else {
+  const layers = topologicalLayers(itemsToCreate);
+  let createdSoFar = 0;
+  for (const [layerIndex, layer] of layers.entries()) {
+    if (!options.dryRun && layer.length > 0) {
+      log.step(
+        `criando issues ${createdSoFar + 1}-${createdSoFar + layer.length} de ${itemsToCreate.length} (camada ${layerIndex + 1}/${layers.length})...`,
+      );
+    }
+    createdSoFar += layer.length;
+
+    const createdInLayer = await mapWithConcurrency(layer, ISSUE_CREATE_CONCURRENCY, async (item) => {
+      const labels = labelsForItem(item);
+      const dependsOn = item.dependsOn.map((id) => renderDependency(id, { issueNumberByRequirementId }));
+      if (options.dryRun) {
+        return { title: item.title, dependsOn: item.dependsOn };
+      }
       const number = await publisher.createIssue(
         item,
         labels,
         milestoneBySprint.get(item.sprint),
         issueNumberByRequirementId,
       );
-      for (const requirementId of item.requirementIds) {
-        issueNumberByRequirementId.set(requirementId, number);
+      return { number, title: item.title, dependsOn };
+    });
+
+    for (const [index, item] of layer.entries()) {
+      const created = createdInLayer[index]!;
+      if (!options.dryRun && 'number' in created) {
+        for (const requirementId of item.requirementIds) {
+          issueNumberByRequirementId.set(requirementId, created.number);
+        }
       }
-      result.created.push({ number, title: item.title, dependsOn });
+      result.created.push(created);
     }
   }
 
