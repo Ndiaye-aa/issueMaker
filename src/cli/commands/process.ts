@@ -46,6 +46,15 @@ export function registerProcessCommand(program: Command): void {
       const aiClient = createAIClient({ cache: options.cache });
       const batchSize = readBacklogBatchSize();
       await mkdir(options.out, { recursive: true });
+      // Cria os arquivos de backlog já no início (mesmo vazios): evita que editores abram
+      // o caminho antes da etapa 3/3 gravar o conteúdo de fato e reportem "arquivo inexistente".
+      await Promise.all(
+        (['frontend', 'backend'] as const).map((layer) =>
+          writeFile(join(options.out, `backlog-${layer}.md`), '_gerando backlog..._\n', {
+            flag: 'wx',
+          }).catch(() => {}),
+        ),
+      );
 
       try {
         log.step(`etapa 1/3: análise de ${options.file}`);
