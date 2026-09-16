@@ -26,9 +26,10 @@ function makeItem(overrides: Partial<BacklogItem> = {}): BacklogItem {
 
 function makeMockPublisher(): jest.Mocked<GithubPublisherLike> {
   return {
-    listOpenIssuesWithLabel: jest.fn(async () => [{ number: 10, title: 'Issue antiga', requirementIds: ['REQ-OLD'] }]),
+    listOpenIssuesWithLabel: jest.fn(async () => [{ number: 10, nodeId: 'node-10', title: 'Issue antiga', requirementIds: ['REQ-OLD'] }]),
+    listAllOpenIssues: jest.fn(async () => [{ number: 10, nodeId: 'node-10', title: 'Issue antiga', requirementIds: ['REQ-OLD'] }]),
     ensureLabelsExist: jest.fn(async () => undefined),
-    closeIssue: jest.fn(async () => undefined),
+    deleteIssue: jest.fn(async () => undefined),
     ensureMilestonesExist: jest.fn(async (specs: MilestoneSpec[]) => new Map(specs.map((s) => [s.number, s.number + 100]))),
     createIssue: jest.fn(async () => 99),
     closeCompletedMilestones: jest.fn(async () => []),
@@ -102,26 +103,28 @@ describe('publishBacklog', () => {
     const result = await publishBacklog(items, publisher, { mode: 'add', dryRun: true });
 
     expect(publisher.ensureLabelsExist).not.toHaveBeenCalled();
-    expect(publisher.closeIssue).not.toHaveBeenCalled();
+    expect(publisher.deleteIssue).not.toHaveBeenCalled();
     expect(publisher.createIssue).not.toHaveBeenCalled();
     expect(publisher.closeCompletedMilestones).not.toHaveBeenCalled();
-    expect(result.closed).toEqual([]);
+    expect(result.deleted).toEqual([]);
     expect(result.created).toEqual([{ title: items[0]!.title, dependsOn: [] }]);
     expect(result.skipped).toEqual([]);
     expect(result.closedMilestones).toEqual([]);
   });
 
-  it('em modo replace + dry-run, lista o que seria fechado sem chamar a API de escrita', async () => {
+  it('em modo replace + dry-run, lista o que seria apagado sem chamar a API de escrita nem pedir confirmação', async () => {
     const publisher = makeMockPublisher();
     const items = [makeItem()];
+    const confirmDeleteAll = jest.fn(async () => true);
 
-    const result = await publishBacklog(items, publisher, { mode: 'replace', dryRun: true });
+    const result = await publishBacklog(items, publisher, { mode: 'replace', dryRun: true, confirmDeleteAll });
 
-    expect(publisher.listOpenIssuesWithLabel).toHaveBeenCalledWith('sdd-bot');
-    expect(publisher.closeIssue).not.toHaveBeenCalled();
+    expect(publisher.listAllOpenIssues).toHaveBeenCalledTimes(1);
+    expect(confirmDeleteAll).not.toHaveBeenCalled();
+    expect(publisher.deleteIssue).not.toHaveBeenCalled();
     expect(publisher.ensureLabelsExist).not.toHaveBeenCalled();
     expect(publisher.createIssue).not.toHaveBeenCalled();
-    expect(result.closed).toEqual([{ number: 10, title: 'Issue antiga', requirementIds: ['REQ-OLD'] }]);
+    expect(result.deleted).toEqual([{ number: 10, nodeId: 'node-10', title: 'Issue antiga', requirementIds: ['REQ-OLD'] }]);
     expect(result.created).toEqual([{ title: items[0]!.title, dependsOn: [] }]);
   });
 
@@ -185,20 +188,66 @@ describe('publishBacklog', () => {
     expect(result.closedMilestones).toEqual(['Sprint 1']);
   });
 
-  it('em modo replace sem dry-run, fecha issues existentes antes de criar novas', async () => {
+  it('em modo replace sem dry-run, apaga issues existentes antes de criar novas', async () => {
     const publisher = makeMockPublisher();
     const items = [makeItem()];
 
     const result = await publishBacklog(items, publisher, { mode: 'replace', dryRun: false });
 
-    expect(publisher.closeIssue).toHaveBeenCalledWith(10);
-    expect(result.closed).toEqual([{ number: 10, title: 'Issue antiga', requirementIds: ['REQ-OLD'] }]);
+    expect(publisher.deleteIssue).toHaveBeenCalledWith('node-10');
+    expect(result.deleted).toEqual([{ number: 10, nodeId: 'node-10', title: 'Issue antiga', requirementIds: ['REQ-OLD'] }]);
+  });
+
+  it('em modo replace, apaga issues sem a label sdd-bot (escopo é o repositório inteiro)', async () => {
+    const publisher = makeMockPublisher();
+    publisher.listAllOpenIssues.mockResolvedValue([
+      { number: 5, nodeId: 'node-5', title: 'Issue manual sem label sdd-bot', requirementIds: [] },
+    ]);
+
+    const result = await publishBacklog([makeItem()], publisher, { mode: 'replace', dryRun: false });
+
+    expect(publisher.deleteIssue).toHaveBeenCalledWith('node-5');
+    expect(result.deleted).toEqual([{ number: 5, nodeId: 'node-5', title: 'Issue manual sem label sdd-bot', requirementIds: [] }]);
+  });
+
+  it('pede confirmação antes de apagar; sem confirmar, cancela a publicação sem apagar nem criar', async () => {
+    const publisher = makeMockPublisher();
+    const confirmDeleteAll = jest.fn(async () => false);
+
+    await expect(
+      publishBacklog([makeItem()], publisher, { mode: 'replace', dryRun: false, confirmDeleteAll }),
+    ).rejects.toThrow(/confirmação negada/);
+
+    expect(confirmDeleteAll).toHaveBeenCalledWith(1);
+    expect(publisher.deleteIssue).not.toHaveBeenCalled();
+    expect(publisher.createIssue).not.toHaveBeenCalled();
+  });
+
+  it('confirmando, prossegue normalmente com a deleção', async () => {
+    const publisher = makeMockPublisher();
+    const confirmDeleteAll = jest.fn(async () => true);
+
+    const result = await publishBacklog([makeItem()], publisher, { mode: 'replace', dryRun: false, confirmDeleteAll });
+
+    expect(confirmDeleteAll).toHaveBeenCalledWith(1);
+    expect(publisher.deleteIssue).toHaveBeenCalledWith('node-10');
+    expect(result.deleted).toHaveLength(1);
+  });
+
+  it('sem issues existentes, não chama o callback de confirmação', async () => {
+    const publisher = makeMockPublisher();
+    publisher.listAllOpenIssues.mockResolvedValue([]);
+    const confirmDeleteAll = jest.fn(async () => true);
+
+    await publishBacklog([makeItem()], publisher, { mode: 'replace', dryRun: false, confirmDeleteAll });
+
+    expect(confirmDeleteAll).not.toHaveBeenCalled();
   });
 
   it('idempotência: em modo add, não recria uma issue já aberta com o mesmo título', async () => {
     const items = [makeItem({ title: 'Issue já existente' }), makeItem({ id: 'BL-002', title: 'Issue nova' })];
     const publisher = makeMockPublisher();
-    publisher.listOpenIssuesWithLabel.mockResolvedValue([{ number: 10, title: 'Issue já existente', requirementIds: ['REQ-001'] }]);
+    publisher.listOpenIssuesWithLabel.mockResolvedValue([{ number: 10, nodeId: 'node-10', title: 'Issue já existente', requirementIds: ['REQ-001'] }]);
     publisher.ensureMilestonesExist.mockResolvedValue(new Map());
     publisher.createIssue.mockResolvedValue(42);
 
@@ -215,7 +264,7 @@ describe('publishBacklog', () => {
     const publishedTitles = new Set<string>();
     const publisher = makeMockPublisher();
     publisher.listOpenIssuesWithLabel.mockImplementation(async () =>
-      [...publishedTitles].map((title, index) => ({ number: index + 1, title, requirementIds: [] })),
+      [...publishedTitles].map((title, index) => ({ number: index + 1, nodeId: `node-${index + 1}`, title, requirementIds: [] })),
     );
     publisher.createIssue.mockImplementation(async (item) => {
       publishedTitles.add(item.title);
@@ -269,7 +318,7 @@ describe('publishBacklog — dependências em ordem topológica', () => {
 
   it('em modo add, resolve dependência de issue já publicada (outra camada ou execução anterior)', async () => {
     const publisher = sequentialPublisher();
-    publisher.listOpenIssuesWithLabel.mockResolvedValue([{ number: 7, title: api.title, requirementIds: ['REQ-5'] }]);
+    publisher.listOpenIssuesWithLabel.mockResolvedValue([{ number: 7, nodeId: 'node-7', title: api.title, requirementIds: ['REQ-5'] }]);
 
     const result = await publishBacklog([screen, api], publisher, { mode: 'add', dryRun: false });
 
@@ -280,11 +329,11 @@ describe('publishBacklog — dependências em ordem topológica', () => {
 
   it('em modo replace, não reaproveita números das issues antigas e marca dependência não publicada', async () => {
     const publisher = sequentialPublisher();
-    publisher.listOpenIssuesWithLabel.mockResolvedValue([{ number: 7, title: api.title, requirementIds: ['REQ-5'] }]);
+    publisher.listAllOpenIssues.mockResolvedValue([{ number: 7, nodeId: 'node-7', title: api.title, requirementIds: ['REQ-5'] }]);
 
     const result = await publishBacklog([screen], publisher, { mode: 'replace', dryRun: false });
 
-    expect(publisher.closeIssue).toHaveBeenCalledWith(7);
+    expect(publisher.deleteIssue).toHaveBeenCalledWith('node-7');
     expect(result.created).toEqual([{ number: 41, title: screen.title, dependsOn: ['REQ-5 (não publicado)'] }]);
   });
 
@@ -294,7 +343,7 @@ describe('publishBacklog — dependências em ordem topológica', () => {
     const b = makeItem({ id: 'BL-002', title: 'Item B do ciclo', requirementIds: ['REQ-2'], dependsOn: ['REQ-1'] });
 
     await expect(publishBacklog([a, b], publisher, { mode: 'replace', dryRun: false })).rejects.toThrow(/ciclo de dependências.*REQ-1 → REQ-2 → REQ-1/);
-    expect(publisher.closeIssue).not.toHaveBeenCalled();
+    expect(publisher.deleteIssue).not.toHaveBeenCalled();
     expect(publisher.createIssue).not.toHaveBeenCalled();
   });
 

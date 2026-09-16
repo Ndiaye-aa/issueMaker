@@ -10,9 +10,20 @@ const INDEPENDENT_CALLS_CONCURRENCY = 5;
 
 export interface GithubIssueRef {
   number: number;
+  /** Id global GraphQL da issue, necessário para a mutation `deleteIssue`. */
+  nodeId: string;
   title: string;
   /** Ids de requisito lidos do comentário sdd-bot:meta no corpo (resolvem "Depende de: #N"). */
   requirementIds: string[];
+}
+
+function toGithubIssueRef(issue: { number: number; node_id: string; title: string; body?: string | null }): GithubIssueRef {
+  return {
+    number: issue.number,
+    nodeId: issue.node_id,
+    title: issue.title,
+    requirementIds: parseRequirementIdsFromBody(issue.body),
+  };
 }
 
 const MILESTONE_TITLE_REGEX = /^Sprint (\d+)$/;
@@ -46,13 +57,18 @@ export class GithubPublisher {
       state: 'open',
       per_page: 100,
     });
-    return issues
-      .filter((issue) => !issue.pull_request)
-      .map((issue) => ({
-        number: issue.number,
-        title: issue.title,
-        requirementIds: parseRequirementIdsFromBody(issue.body),
-      }));
+    return issues.filter((issue) => !issue.pull_request).map(toGithubIssueRef);
+  }
+
+  /** Todas as issues abertas do repositório, sem filtro de label — usado pelo modo `replace` para apagar tudo. */
+  async listAllOpenIssues(): Promise<GithubIssueRef[]> {
+    const issues = await this.octokit.paginate(this.octokit.rest.issues.listForRepo, {
+      owner: this.owner,
+      repo: this.repo,
+      state: 'open',
+      per_page: 100,
+    });
+    return issues.filter((issue) => !issue.pull_request).map(toGithubIssueRef);
   }
 
   /** Cria as labels ausentes e alinha a cor das existentes à paleta por dimensão. */
@@ -85,13 +101,12 @@ export class GithubPublisher {
     });
   }
 
-  async closeIssue(issueNumber: number): Promise<void> {
-    await this.octokit.rest.issues.update({
-      owner: this.owner,
-      repo: this.repo,
-      issue_number: issueNumber,
-      state: 'closed',
-    });
+  /** Apaga a issue permanentemente (não é `close`) via mutation GraphQL — exige permissão de admin no repositório. */
+  async deleteIssue(nodeId: string): Promise<void> {
+    await this.octokit.graphql(
+      `mutation($id: ID!) { deleteIssue(input: { issueId: $id }) { clientMutationId } }`,
+      { id: nodeId },
+    );
   }
 
   /**

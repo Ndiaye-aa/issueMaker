@@ -7,16 +7,15 @@ import { sortTopologically, topologicalLayers } from './dependency-order.js';
 import type { GithubIssueRef } from './github.js';
 import { BOT_LABEL, formatLabel, NEEDS_CLARIFICATION_STATUS } from './labels.js';
 
-/** Fechar issues/criar labels não tem relação de ordem entre si; limite conservador frente ao secondary rate limit do GitHub REST. */
-const GITHUB_INDEPENDENT_CALLS_CONCURRENCY = 5;
-
 /**
- * Criar issue é escrita de conteúdo (não só metadado como label/close); o GitHub recomenda
- * evitar rajadas nesses endpoints para não acionar o secondary rate limit, daí um limite menor
- * que `GITHUB_INDEPENDENT_CALLS_CONCURRENCY`. Aplica-se só dentro de uma camada topológica —
- * itens de camadas diferentes continuam estritamente em ordem.
+ * Criar issue é escrita de conteúdo; o GitHub recomenda evitar rajadas nesses endpoints para
+ * não acionar o secondary rate limit. Aplica-se só dentro de uma camada topológica — itens de
+ * camadas diferentes continuam estritamente em ordem.
  */
 const ISSUE_CREATE_CONCURRENCY = 3;
+
+/** Deleção é escrita pesada e irreversível; mesmo limite conservador de `ISSUE_CREATE_CONCURRENCY`. */
+const ISSUE_DELETE_CONCURRENCY = 3;
 
 export const SDD_BOT_LABEL = BOT_LABEL;
 
@@ -29,8 +28,9 @@ export interface MilestoneSpec {
 
 export interface GithubPublisherLike {
   listOpenIssuesWithLabel(label: string): Promise<GithubIssueRef[]>;
+  listAllOpenIssues(): Promise<GithubIssueRef[]>;
   ensureLabelsExist(labels: string[]): Promise<void>;
-  closeIssue(issueNumber: number): Promise<void>;
+  deleteIssue(nodeId: string): Promise<void>;
   ensureMilestonesExist(milestones: MilestoneSpec[]): Promise<Map<number, number>>;
   createIssue(
     item: BacklogItem,
@@ -44,6 +44,8 @@ export interface GithubPublisherLike {
 export interface PublishOptions {
   mode: 'add' | 'replace';
   dryRun: boolean;
+  /** Modo `replace`: pede confirmação antes de apagar issues existentes. Sem callback, segue sem perguntar. */
+  confirmDeleteAll?: (count: number) => Promise<boolean>;
 }
 
 export interface CreatedIssue {
@@ -54,7 +56,7 @@ export interface CreatedIssue {
 }
 
 export interface PublishResult {
-  closed: GithubIssueRef[];
+  deleted: GithubIssueRef[];
   created: CreatedIssue[];
   skipped: CreatedIssue[];
   closedMilestones: string[];
@@ -92,7 +94,7 @@ export async function publishBacklog(
   options: PublishOptions,
   sprintPlan?: SprintPlan,
 ): Promise<PublishResult> {
-  const result: PublishResult = { closed: [], created: [], skipped: [], closedMilestones: [] };
+  const result: PublishResult = { deleted: [], created: [], skipped: [], closedMilestones: [] };
 
   // Ordem topológica (ciclo = erro antes de tocar na API): quando um item é criado, as issues
   // das quais depende já existem e o corpo pode citar "#N" numa única passada.
@@ -105,15 +107,22 @@ export async function publishBacklog(
   // Idempotência do modo "add": issues com o mesmo título já publicadas (label
   // sdd-bot, ainda abertas) não são recriadas em reexecuções.
   let alreadyPublishedTitles = new Set<string>();
-  const existing = await publisher.listOpenIssuesWithLabel(SDD_BOT_LABEL);
   if (options.mode === 'replace') {
-    if (!options.dryRun) {
-      await mapWithConcurrency(existing, GITHUB_INDEPENDENT_CALLS_CONCURRENCY, (issue) =>
-        publisher.closeIssue(issue.number),
+    // Escopo total: TODAS as issues abertas do repo, não só as do sdd-bot — ação irreversível.
+    const existing = await publisher.listAllOpenIssues();
+    if (!options.dryRun && existing.length > 0) {
+      const confirmed = (await options.confirmDeleteAll?.(existing.length)) ?? true;
+      if (!confirmed) {
+        throw new Error(`publicação cancelada: confirmação negada para apagar ${existing.length} issue(ns) existente(s).`);
+      }
+      log.warn(
+        `modo replace: apagando permanentemente ${existing.length} issue(ns) aberta(s) no repositório (todas, não só as do sdd-bot). Ação irreversível.`,
       );
+      await mapWithConcurrency(existing, ISSUE_DELETE_CONCURRENCY, (issue) => publisher.deleteIssue(issue.nodeId));
     }
-    result.closed.push(...existing);
+    result.deleted.push(...existing);
   } else {
+    const existing = await publisher.listOpenIssuesWithLabel(SDD_BOT_LABEL);
     alreadyPublishedTitles = new Set(existing.map((issue) => issue.title));
     for (const issue of existing) {
       for (const requirementId of issue.requirementIds) {
