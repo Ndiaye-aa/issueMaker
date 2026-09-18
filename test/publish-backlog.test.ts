@@ -47,7 +47,7 @@ describe('labelsForItem', () => {
   it('gera exatamente uma label por dimensão, no formato "dimensão: valor", mais o marcador do bot', () => {
     const labels = labelsForItem(makeItem({ type: 'bug', layer: 'frontend', priority: 'must' }));
 
-    expect(labels).toEqual(['sdd-bot', 'type: bug', 'layer: frontend', 'priority: must', 'area: autenticacao']);
+    expect(labels).toEqual(['sdd-bot', 'tipo: bug 🔴', 'layer: frontend', 'priority: must', 'area: autenticacao']);
   });
 
   it('não inclui sprint-N (é milestone) nem as labels de texto livre do item', () => {
@@ -134,7 +134,7 @@ describe('publishBacklog', () => {
 
     const result = await publishBacklog(items, publisher, { mode: 'add', dryRun: false });
 
-    const expected = ['sdd-bot', 'type: feature', 'layer: backend', 'priority: should', 'area: autenticacao'];
+    const expected = ['sdd-bot', 'tipo: feature 🔵', 'layer: backend', 'priority: should', 'area: autenticacao'];
     expect(publisher.ensureLabelsExist).toHaveBeenCalledWith(expected);
     expect(publisher.createIssue).toHaveBeenCalledWith(items[0], expected, 102, expect.any(Map));
     expect(result.created).toEqual([{ number: 99, title: items[0]!.title, dependsOn: [] }]);

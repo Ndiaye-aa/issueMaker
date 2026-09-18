@@ -27,9 +27,19 @@ describe('normalizeLabelName', () => {
 
 describe('formatLabel', () => {
   it('usa o formato "dimensão: valor" em minúsculo', () => {
-    expect(formatLabel('type', 'feature')).toBe('type: feature');
     expect(formatLabel('priority', 'must')).toBe('priority: must');
     expect(formatLabel('status', 'needs-clarification')).toBe('status: needs-clarification');
+  });
+
+  it('tipo usa o prefixo em português e anexa o emoji do valor', () => {
+    expect(formatLabel('type', 'feature')).toBe('tipo: feature 🔵');
+    expect(formatLabel('type', 'bug')).toBe('tipo: bug 🔴');
+    expect(formatLabel('type', 'refactor')).toBe('tipo: refactor 🟠');
+    expect(formatLabel('type', 'docs')).toBe('tipo: docs 🟢');
+  });
+
+  it('tipo sem emoji definido (tech-debt) não anexa nada', () => {
+    expect(formatLabel('type', 'tech-debt')).toBe('tipo: tech-debt');
   });
 
   it('remove a numeração da seção do SDD na área e permite até 40 caracteres de valor', () => {
@@ -44,17 +54,24 @@ describe('formatLabel', () => {
     expect(formatLabel('area', '4.3')).toBe('');
   });
 
-  it('faz o parse de volta', () => {
+  it('faz o parse de volta, aceitando o prefixo novo e o legado', () => {
+    expect(parseLabel('tipo: bug 🔴')).toEqual({ dimension: 'type', value: 'bug' });
     expect(parseLabel('type: bug')).toEqual({ dimension: 'type', value: 'bug' });
     expect(parseLabel('sdd-bot')).toBeUndefined();
   });
 });
 
 describe('getLabelColor — famílias por dimensão', () => {
-  it('type:* na família azul, com uma cor distinta por valor', () => {
-    const colors = ['feature', 'bug', 'tech-debt'].map((value) => getLabelColor(`type: ${value}`));
-    expect(colors).toEqual(['1D76DB', '0052CC', '5EA0F5']);
-    expect(new Set(colors).size).toBe(3);
+  it('tipo:* com uma cor distinta por valor', () => {
+    const colors = ['feature', 'bug', 'tech-debt', 'refactor', 'docs'].map((value) =>
+      getLabelColor(`tipo: ${value}`),
+    );
+    expect(colors).toEqual(['1D76DB', '0052CC', '5EA0F5', 'FB8C00', '90EE90']);
+    expect(new Set(colors).size).toBe(5);
+  });
+
+  it('aceita o prefixo legado "type:" com o mesmo resultado', () => {
+    expect(getLabelColor('type: bug')).toBe(getLabelColor('tipo: bug 🔴'));
   });
 
   it('priority:* na família vermelho/laranja', () => {
@@ -73,16 +90,11 @@ describe('getLabelColor — famílias por dimensão', () => {
     expect(getLabelColor('sdd-bot')).toBe('EDEDED');
   });
 
-  it('area:* é determinística e fica na família verde', () => {
-    expect(getLabelColor('area: autenticacao')).toBe(getLabelColor('area: autenticacao'));
-    expect(getLabelColor('area: autenticacao')).not.toBe(getLabelColor('area: relatorios'));
-    for (const value of ['autenticacao', 'relatorios', 'pagamentos', 'modelo-de-dados']) {
-      const hex = getLabelColor(`area: ${value}`);
-      expect(hex).toMatch(/^[0-9A-F]{6}$/);
-      const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
-      expect(g).toBeGreaterThan(r);
-      expect(g).toBeGreaterThan(b);
-    }
+  it('area:* usa uma única cor neutra, igual para qualquer módulo', () => {
+    const values = ['autenticacao', 'relatorios', 'pagamentos', 'modelo-de-dados'];
+    const colors = values.map((value) => getLabelColor(`area: ${value}`));
+    expect(new Set(colors).size).toBe(1);
+    expect(colors[0]).toMatch(/^[0-9A-F]{6}$/);
   });
 
   it('hashShade é estável para a mesma entrada', () => {

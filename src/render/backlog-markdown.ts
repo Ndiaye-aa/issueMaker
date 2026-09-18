@@ -111,7 +111,7 @@ export function parseRequirementIdsFromBody(body: string | null | undefined): st
   const match = META_REGEX.exec(body ?? '');
   return parseCommaList(match?.[4] ?? '');
 }
-const TYPE_REGEX = /^\*\*Tipo:\*\*\s*(feature|bug|tech-debt)\s*$/m;
+const TYPE_REGEX = /^\*\*Tipo:\*\*\s*(feature|bug|tech-debt|refactor|docs)\s*$/m;
 const PRIORITY_REGEX = /^\*\*Prioridade:\*\*\s*(must|should|could)\s*$/m;
 const LABELS_REGEX = /^\*\*Labels:\*\*\s*(.*)$/m;
 const DESCRIPTION_REGEX = /\*\*Descrição:\*\*\n([\s\S]*?)\n\n/;

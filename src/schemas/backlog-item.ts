@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { backlogQualityRules } from './backlog-quality.js';
 
-export const BacklogItemTypeSchema = z.enum(['feature', 'bug', 'tech-debt']);
+export const BacklogItemTypeSchema = z.enum(['feature', 'bug', 'tech-debt', 'refactor', 'docs']);
 
 export const BacklogLayerSchema = z.enum(['frontend', 'backend']);
 export type BacklogLayer = z.infer<typeof BacklogLayerSchema>;
@@ -37,7 +37,9 @@ const aiGeneratedShape = {
     .string()
     .min(10, 'title deve ser específico, não genérico')
     .describe('Verbo de ação no infinitivo + objeto específico + contexto se necessário. Até 70 caracteres.'),
-  type: BacklogItemTypeSchema,
+  type: BacklogItemTypeSchema.describe(
+    '"feature": nova funcionalidade ou melhoria observável pelo usuário. "bug": algo já existente está quebrado (exige reproSteps). "tech-debt": dívida técnica ampla (arquitetura, infraestrutura, dados) que não é uma reescrita pontual. "refactor": melhoria pontual de código já existente sem alterar o comportamento externo (ex.: extrair função, renomear, remover duplicação). "docs": alteração em documentação ou arquivos README, sem código de produção.',
+  ),
   description: z
     .string()
     .min(15, 'description deve ser objetiva e detalhada')

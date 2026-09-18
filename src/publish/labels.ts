@@ -13,7 +13,28 @@ const GITHUB_LABEL_MAX_LENGTH = 50;
 const DEFAULT_VALUE_MAX_LENGTH = 20;
 const AREA_VALUE_MAX_LENGTH = 40;
 
-const TYPE_COLORS: Record<string, string> = { feature: '1D76DB', bug: '0052CC', 'tech-debt': '5EA0F5' };
+const TYPE_COLORS: Record<string, string> = {
+  feature: '1D76DB',
+  bug: '0052CC',
+  'tech-debt': '5EA0F5',
+  refactor: 'FB8C00',
+  docs: '90EE90',
+};
+/** Emoji só para os tipos com padrão visual definido; `tech-debt` fica sem emoji. */
+const TYPE_EMOJIS: Record<string, string> = {
+  feature: '🔵',
+  bug: '🔴',
+  refactor: '🟠',
+  docs: '🟢',
+};
+/** Texto exibido por dimensão; só `type` diverge da chave interna (histórico em inglês). */
+const DIMENSION_PREFIX: Record<LabelDimension, string> = {
+  type: 'tipo',
+  layer: 'layer',
+  priority: 'priority',
+  area: 'area',
+  status: 'status',
+};
 const PRIORITY_COLORS: Record<string, string> = { must: 'B60205', should: 'D93F0B', could: 'F9A38A' };
 const LAYER_COLORS: Record<string, string> = { frontend: '5319E7', backend: '8A63D2' };
 const TYPE_FAMILY_FALLBACK = '1D76DB';
@@ -21,6 +42,8 @@ const PRIORITY_FAMILY_FALLBACK = 'D93F0B';
 const LAYER_FAMILY_FALLBACK = '5319E7';
 const STATUS_COLOR = 'FBCA04';
 const BOT_COLOR = 'EDEDED';
+/** Cor única e neutra para todo módulo/área — a distinção fica no texto, não na cor. */
+const AREA_COLOR = 'C4C4C4';
 
 export function normalizeLabelName(raw: string, maxLength = DEFAULT_VALUE_MAX_LENGTH): string {
   const normalized = raw
@@ -44,19 +67,34 @@ export function formatLabel(dimension: LabelDimension, value: string): string {
       ? normalizeLabelName(stripSectionNumber(value), AREA_VALUE_MAX_LENGTH)
       : normalizeLabelName(value);
   if (normalizedValue.length === 0) return '';
-  return `${dimension}: ${normalizedValue}`.slice(0, GITHUB_LABEL_MAX_LENGTH);
+  const emoji = dimension === 'type' ? TYPE_EMOJIS[normalizedValue] : undefined;
+  const displayValue = emoji ? `${normalizedValue} ${emoji}` : normalizedValue;
+  return `${DIMENSION_PREFIX[dimension]}: ${displayValue}`.slice(0, GITHUB_LABEL_MAX_LENGTH);
 }
 
+/** Aceita tanto o prefixo atual ("tipo") quanto o legado ("type", de labels já publicadas). */
+const DIMENSION_ALIASES: Record<string, LabelDimension> = {
+  tipo: 'type',
+  type: 'type',
+  layer: 'layer',
+  priority: 'priority',
+  area: 'area',
+  status: 'status',
+};
+
 export function parseLabel(label: string): { dimension: LabelDimension; value: string } | undefined {
-  const match = /^(type|layer|priority|area|status): (.+)$/.exec(label);
+  const match = /^(tipo|type|layer|priority|area|status): (.+)$/.exec(label);
   if (!match) return undefined;
-  return { dimension: match[1] as LabelDimension, value: match[2] ?? '' };
+  const dimension = DIMENSION_ALIASES[match[1] as string];
+  if (!dimension) return undefined;
+  const value = (match[2] ?? '').replace(/\s*\p{Extended_Pictographic}️?\s*$/gu, '');
+  return { dimension, value };
 }
 
 /**
- * Cores fixas por família de dimensão (todas `type:*` em azul, `priority:*` em vermelho/
- * laranja, `layer:*` em roxo, `area:*` em tons de verde derivados do nome), para que
- * reexecuções e repositórios diferentes recebam sempre a mesma cor por label.
+ * Cores fixas por família de dimensão (`tipo:*` varia por valor — ver TYPE_COLORS —,
+ * `priority:*` em vermelho/laranja, `layer:*` em roxo, `area:*` numa cor neutra única),
+ * para que reexecuções e repositórios diferentes recebam sempre a mesma cor por label.
  */
 export function getLabelColor(label: string): string {
   if (label === BOT_LABEL) return BOT_COLOR;
@@ -72,7 +110,7 @@ export function getLabelColor(label: string): string {
     case 'status':
       return STATUS_COLOR;
     case 'area':
-      return hashShade(parsed.value);
+      return AREA_COLOR;
   }
 }
 
