@@ -17,6 +17,7 @@ function makeRequirement(id: string, title: string): Requirement {
     description: `Descrição de ${title}`,
     layer: 'backend',
     priority: 'must',
+    effort: 'm',
     dependencies: [],
     sourceSection: 'Autenticação',
   };
@@ -104,5 +105,72 @@ describe('extractRequirements', () => {
     expect(unique[1]?.dependencies).toEqual(['REQ-3']);
     expect(unique[2]?.dependencies).toEqual(['REQ-4']);
     expect([...used].sort()).toEqual(['REQ-1', 'REQ-2', 'REQ-3', 'REQ-4', 'REQ-7']);
+  });
+});
+
+describe('extractRequirements — esforço', () => {
+  it('o prompt de extração pede o campo effort com a escala', async () => {
+    const complete = jest.fn(async () => []);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await extractRequirements('## S\nconteúdo', { complete } as any);
+    const [request] = complete.mock.calls[0] as [{ systemPrompt: string }];
+    expect(request.systemPrompt).toContain('"effort"');
+    expect(request.systemPrompt).toContain('"xl"');
+  });
+});
+
+describe('extractRequirements — dependências e paralelismo', () => {
+  it('descarta dependências que apontam para fora do chunk e auto-referências', () => {
+    const extracted = [
+      { ...makeRequirement('REQ-1', 'A'), dependencies: ['REQ-1', 'REQ-42'] },
+      { ...makeRequirement('REQ-2', 'B'), dependencies: ['REQ-1', 'REQ-1'] },
+    ];
+
+    const unique = ensureUniqueIds(extracted, new Set());
+
+    expect(unique[0]?.dependencies).toEqual([]);
+    expect(unique[1]?.dependencies).toEqual(['REQ-1']);
+  });
+
+  it('extrai chunks em paralelo e renumera na ordem do documento', async () => {
+    const text = '## A\nconteúdo A\n## B\nconteúdo B\n## C\nconteúdo C\n';
+    const complete = jest.fn(async (request: { userPrompt: string }, schema: ZodType<unknown>) => {
+      if (schema !== RequirementArraySchema) return { same: false };
+      const section = /Seção do SDD: "(\w)"/.exec(request.userPrompt)?.[1] ?? '?';
+      // Chunk A termina por último: a ordem de chegada não pode afetar a numeração.
+      await new Promise((resolve) => setTimeout(resolve, section === 'A' ? 30 : 1));
+      return [
+        { ...makeRequirement('REQ-1', `${section} um`), dependencies: [] },
+        { ...makeRequirement('REQ-2', `${section} dois`), dependencies: ['REQ-1'] },
+      ];
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const requirements = await extractRequirements(text, { complete } as any);
+
+    expect(requirements.map((r) => r.title)).toEqual(['A um', 'A dois', 'B um', 'B dois', 'C um', 'C dois']);
+    expect(requirements.map((r) => r.id)).toEqual(['REQ-1', 'REQ-2', 'REQ-3', 'REQ-4', 'REQ-5', 'REQ-6']);
+    expect(requirements.map((r) => r.dependencies)).toEqual([[], ['REQ-1'], [], ['REQ-3'], [], ['REQ-5']]);
+    // A lista de ids já usados não é mais enviada: cada chunk é independente.
+    for (const [request] of complete.mock.calls as [{ userPrompt: string }][]) {
+      expect(request.userPrompt).not.toContain('IDs já usados');
+    }
+  });
+
+  it('ao remover uma duplicata, redireciona dependências para o requisito mantido', async () => {
+    const extracted = [
+      makeRequirement('REQ-1', 'Login de usuário'),
+      makeRequirement('REQ-2', 'Login de usuário'),
+      { ...makeRequirement('REQ-3', 'Logout'), dependencies: ['REQ-2'] },
+    ];
+    const complete = jest.fn(async (_request: unknown, schema: ZodType<unknown>) =>
+      schema === RequirementArraySchema ? extracted : { same: true },
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const requirements = await extractRequirements('## S\nconteúdo', { complete } as any);
+
+    expect(requirements.map((r) => r.id)).toEqual(['REQ-1', 'REQ-3']);
+    expect(requirements[1]?.dependencies).toEqual(['REQ-1']);
   });
 });

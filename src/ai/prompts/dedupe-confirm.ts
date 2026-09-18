@@ -3,7 +3,6 @@ import type { CompletionRequest } from '../provider.js';
 import type { Requirement } from '../../schemas/requirement.js';
 
 export const DedupeConfirmSchema = z.object({ same: z.boolean() });
-export type DedupeConfirm = z.infer<typeof DedupeConfirmSchema>;
 
 const SYSTEM_PROMPT = `Você é um analista de requisitos de software sênior. Responda SOMENTE com um
 objeto JSON no formato {"same": true} ou {"same": false}. Nenhum texto antes ou depois.`;
@@ -18,5 +17,8 @@ Esses dois requisitos descrevem a mesma coisa?`;
     systemPrompt: SYSTEM_PROMPT,
     userPrompt,
     temperature: 0,
+    // Decisão binária e mecânica: um modelo leve resolve pelo mesmo preço de uma fração
+    // do modelo principal (ver ClaudeCodeProvider.lightModel).
+    tier: 'light',
   };
 }

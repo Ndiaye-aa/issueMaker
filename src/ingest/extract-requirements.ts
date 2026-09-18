@@ -1,35 +1,45 @@
-import type { ResilientAIClient } from '../ai/client.js';
+import type { AIClient } from '../ai/provider.js';
 import { buildExtractRequest } from '../ai/prompts/extract.js';
 import { buildDedupeConfirmRequest, DedupeConfirmSchema } from '../ai/prompts/dedupe-confirm.js';
 import { log } from '../cli/logger.js';
 import { RequirementArraySchema, type Requirement } from '../schemas/requirement.js';
+import { mapWithConcurrency } from '../util/concurrency.js';
 import { chunkDocument } from './chunker.js';
 import { findSimilarPairs } from './dedupe.js';
 
 const DEDUPE_SIMILARITY_THRESHOLD = 0.6;
+// Fan-out máximo do pipeline; o limite real de chamadas simultâneas é imposto pelo
+// cliente de IA (por provedor), isto só evita enfileirar centenas de promessas de uma vez.
+const MAX_FAN_OUT = 8;
 
 export async function extractRequirements(
   sddText: string,
-  aiClient: ResilientAIClient,
+  aiClient: AIClient,
 ): Promise<Requirement[]> {
   const chunks = chunkDocument(sddText);
-  const merged: Requirement[] = [];
+  log.step(`${chunks.length} chunk(s) para extrair`);
 
-  for (const [index, chunk] of chunks.entries()) {
+  // Cada chunk é extraído de forma independente (permite paralelismo); os ids vêm locais
+  // ("REQ-1", "REQ-2"...) e são renumerados aqui, em ordem de documento.
+  const perChunk = await mapWithConcurrency(chunks, MAX_FAN_OUT, async (chunk, index) => {
     log.step(`extraindo chunk ${index + 1}/${chunks.length}: "${chunk.sectionTitle}"`);
-    const existingIds = merged.map((requirement) => requirement.id);
-    const request = buildExtractRequest(chunk, existingIds);
-    const extracted = await aiClient.complete(request, RequirementArraySchema);
-    merged.push(...ensureUniqueIds(extracted, new Set(existingIds)));
+    return aiClient.complete(buildExtractRequest(chunk), RequirementArraySchema);
+  });
+
+  const usedIds = new Set<string>();
+  const merged: Requirement[] = [];
+  for (const extracted of perChunk) {
+    merged.push(...ensureUniqueIds(extracted, usedIds));
   }
 
   return dedupeRequirements(merged, aiClient);
 }
 
 /**
- * Modelos pequenos ignoram a lista de "IDs já usados" e recomeçam em REQ-1 a cada chunk;
+ * Modelos pequenos ignoram instruções de numeração e recomeçam em REQ-1 a cada chunk;
  * ids repetidos quebram o plano de sprints e a rastreabilidade, então renumeramos aqui e
- * reescrevemos as dependências internas ao chunk.
+ * reescrevemos as dependências internas ao chunk. Dependências que apontam para fora do
+ * chunk são descartadas: como cada chunk é extraído isoladamente, elas só podem ser chute.
  */
 export function ensureUniqueIds(extracted: Requirement[], usedIds: Set<string>): Requirement[] {
   let next = nextRequirementNumber(usedIds);
@@ -38,6 +48,7 @@ export function ensureUniqueIds(extracted: Requirement[], usedIds: Set<string>):
   const withIds = extracted.map((requirement) => {
     if (!usedIds.has(requirement.id) && /^REQ-\d+$/.test(requirement.id)) {
       usedIds.add(requirement.id);
+      renamed.set(requirement.id, requirement.id);
       return requirement;
     }
     let candidate = `REQ-${next}`;
@@ -52,7 +63,13 @@ export function ensureUniqueIds(extracted: Requirement[], usedIds: Set<string>):
 
   return withIds.map((requirement) => ({
     ...requirement,
-    dependencies: requirement.dependencies.map((depId) => renamed.get(depId) ?? depId),
+    dependencies: [
+      ...new Set(
+        requirement.dependencies
+          .map((depId) => renamed.get(depId))
+          .filter((depId): depId is string => depId !== undefined && depId !== requirement.id),
+      ),
+    ],
   }));
 }
 
@@ -67,7 +84,7 @@ function nextRequirementNumber(usedIds: Set<string>): number {
 
 async function dedupeRequirements(
   requirements: Requirement[],
-  aiClient: ResilientAIClient,
+  aiClient: AIClient,
 ): Promise<Requirement[]> {
   const pairs = findSimilarPairs(
     requirements,
@@ -76,15 +93,39 @@ async function dedupeRequirements(
   );
   log.step(`${requirements.length} requisito(s) extraído(s); ${pairs.length} par(es) similares para confirmar`);
 
+  // As confirmações são independentes entre si: rodam em paralelo e a decisão de qual
+  // id remover é tomada depois, em ordem, para manter o resultado determinístico.
+  const confirmations = await mapWithConcurrency(pairs, MAX_FAN_OUT, (pair) =>
+    aiClient.complete(buildDedupeConfirmRequest(pair.a, pair.b), DedupeConfirmSchema),
+  );
+
   const idsToRemove = new Set<string>();
-  for (const pair of pairs) {
-    if (idsToRemove.has(pair.a.id) || idsToRemove.has(pair.b.id)) continue;
-    const request = buildDedupeConfirmRequest(pair.a, pair.b);
-    const confirmation = await aiClient.complete(request, DedupeConfirmSchema);
-    if (confirmation.same) {
+  pairs.forEach((pair, index) => {
+    if (idsToRemove.has(pair.a.id) || idsToRemove.has(pair.b.id)) return;
+    if (confirmations[index]?.same) {
       idsToRemove.add(pair.b.id);
     }
-  }
+  });
 
-  return requirements.filter((requirement) => !idsToRemove.has(requirement.id));
+  const kept = requirements.filter((requirement) => !idsToRemove.has(requirement.id));
+  if (idsToRemove.size > 0) {
+    log.step(`${idsToRemove.size} duplicata(s) removida(s)`);
+  }
+  // Dependências para requisitos removidos como duplicata passam a apontar para o mantido.
+  const replacement = new Map<string, string>();
+  pairs.forEach((pair) => {
+    if (idsToRemove.has(pair.b.id) && !idsToRemove.has(pair.a.id)) {
+      replacement.set(pair.b.id, pair.a.id);
+    }
+  });
+  return kept.map((requirement) => ({
+    ...requirement,
+    dependencies: [
+      ...new Set(
+        requirement.dependencies
+          .map((depId) => replacement.get(depId) ?? depId)
+          .filter((depId) => depId !== requirement.id),
+      ),
+    ],
+  }));
 }
