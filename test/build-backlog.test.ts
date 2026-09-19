@@ -1,5 +1,8 @@
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { jest } from '@jest/globals';
-import { buildBacklogForLayer, looksLikeEnvironment } from '../src/backlog/build-backlog.js';
+import { buildAndWriteBacklogs, buildBacklogForLayer, looksLikeEnvironment } from '../src/backlog/build-backlog.js';
 import { log } from '../src/cli/logger.js';
 import type { BacklogItemDraft } from '../src/schemas/backlog-item.js';
 import type { Requirement } from '../src/schemas/requirement.js';
@@ -149,6 +152,29 @@ describe('buildBacklogForLayer', () => {
     expect(warn.mock.calls[0]?.[0]).toContain('título repetido');
     expect(warn.mock.calls[0]?.[0]).toContain('REQ-1');
     expect(warn.mock.calls[0]?.[0]).toContain('REQ-2');
+    warn.mockRestore();
+  });
+
+  it('quando a geração de um requisito esgota as tentativas, marca só ele para revisão manual em vez de derrubar a camada inteira', async () => {
+    const warn = jest.spyOn(log, 'warn').mockImplementation(() => undefined);
+    const complete = jest.fn(async (request: { userPrompt: string }) => {
+      if (request.userPrompt.includes('REQ-2')) {
+        throw new Error('modelo insistiu em título vago após todas as tentativas');
+      }
+      return makeDraft();
+    });
+    const plan: SprintPlan = { sprints: [{ number: 1, goal: 'A', requirementIds: ['REQ-1', 'REQ-2'] }] };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items = await buildBacklogForLayer('backend', requirements, plan, { complete } as any);
+
+    expect(items).toHaveLength(2);
+    const failed = items.find((item) => item.requirementIds.includes('REQ-2'))!;
+    expect(failed.technicalSpecificity?.needsClarification).toBe(true);
+    expect(failed.technicalSpecificity?.clarificationNote).toContain('Geração automática falhou');
+    const ok = items.find((item) => item.requirementIds.includes('REQ-1'))!;
+    expect(ok.technicalSpecificity?.needsClarification).toBe(false);
+    expect(warn.mock.calls.some(([message]) => String(message).includes('revisão manual'))).toBe(true);
     warn.mockRestore();
   });
 });
@@ -320,5 +346,56 @@ describe('buildBacklogForLayer — requisitos shared', () => {
       ['BL-004', 2, 'REQ-4'],
       ['BL-005', 2, 'REQ-5'],
     ]);
+  });
+});
+
+describe('buildAndWriteBacklogs', () => {
+  let outDir: string;
+
+  beforeEach(async () => {
+    outDir = await mkdtemp(join(tmpdir(), 'sdd-bot-build-backlog-'));
+  });
+
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await rm(outDir, { recursive: true, force: true });
+  });
+
+  it('grava as duas camadas em disco com conteúdo real mesmo quando um requisito esgota as tentativas de geração', async () => {
+    jest.spyOn(log, 'warn').mockImplementation(() => undefined);
+    jest.spyOn(log, 'step').mockImplementation(() => undefined);
+
+    const complete = jest.fn(async (request: { userPrompt: string }) => {
+      const id = requirementIdIn(request.userPrompt);
+      if (id === 'REQ-2') {
+        throw new Error('modelo insistiu em critério não verificável após todas as tentativas');
+      }
+      return makeDraft({ title: `Implementar requisito ${id} no módulo de cadastro` });
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await buildAndWriteBacklogs(requirements, sprintPlan, { complete } as any, outDir);
+
+    expect(result.backend.some((item) => item.requirementIds.includes('REQ-2'))).toBe(true);
+
+    const backendMarkdown = await readFile(join(outDir, 'backlog-backend.md'), 'utf-8');
+    const frontendMarkdown = await readFile(join(outDir, 'backlog-frontend.md'), 'utf-8');
+
+    // Nenhum dos dois arquivos fica preso no placeholder de "ainda gerando" — o bug original
+    // era exatamente esse: 1 lote falho derrubava a geração inteira e os arquivos nunca eram
+    // sobrescritos com conteúdo de verdade.
+    expect(backendMarkdown).not.toContain('_gerando backlog..._');
+    expect(frontendMarkdown).not.toContain('_gerando backlog..._');
+    expect(backendMarkdown).toContain('### [Sprint');
+
+    expect(backendMarkdown).toContain('Revisar manualmente:');
+    expect(backendMarkdown).toContain('Geração automática falhou');
+
+    // REQ-1 e REQ-4 (backend) e REQ-3 (frontend) não falharam: aparecem normalmente, sem o
+    // marcador de revisão manual.
+    expect(backendMarkdown).toContain('Implementar requisito REQ-1 no módulo de cadastro');
+    expect(backendMarkdown).toContain('Implementar requisito REQ-4 no módulo de cadastro');
+    expect(frontendMarkdown).toContain('Implementar requisito REQ-3 no módulo de cadastro');
+    expect(frontendMarkdown).not.toContain('Revisar manualmente:');
   });
 });

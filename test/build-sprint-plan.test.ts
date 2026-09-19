@@ -71,7 +71,9 @@ describe('buildSprintPlan', () => {
     });
 
     expect(complete).toHaveBeenCalledTimes(2);
-    expect(plan.sprints.map((s) => s.requirementIds)).toEqual([['R1', 'R2'], ['R3', 'R4']]);
+    // R3 (could) transborda da sprint 1; ao puxar por dependência sem limite antes de
+    // rebalancear, R4 (must) chega na sprint 2 antes de R3 ser reinserido à frente.
+    expect(plan.sprints.map((s) => s.requirementIds)).toEqual([['R1', 'R2'], ['R4', 'R3']]);
     expect(plan.sprints.map((s) => s.goal)).toEqual([
       'Cadastro e edição de usuários funcionando de ponta a ponta',
       'Exclusão de usuários com confirmação funcionando',

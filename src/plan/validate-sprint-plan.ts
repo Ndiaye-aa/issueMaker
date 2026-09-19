@@ -1,6 +1,7 @@
 import type { Requirement } from '../schemas/requirement.js';
 import type { SprintPlan } from '../schemas/sprint-plan.js';
 import { MAX_SPRINTS, pointsOf } from './effort.js';
+import { isSetupRequirement } from './setup-requirement.js';
 
 export const UNPLANNED_SPRINT_GOAL = 'Requisitos não alocados pelo plano';
 
@@ -85,8 +86,12 @@ export function validateAndFixSprintPlan(
 
   let result: SprintPlan = { sprints };
   if (options.maxPerSprint !== undefined || options.capacityPoints !== undefined) {
-    const rebalanced = rebalanceSprints(requirements, result, options);
-    result = pullForward(requirements, rebalanced, options);
+    // Primeiro puxa por dependência, sem limite (nenhum requisito fica órfão numa sprint
+    // tardia só porque a de destino já estava no teto); só depois o excedente de cada
+    // sprint é redistribuído respeitando a capacidade, preservando o tamanho normal delas.
+    const pulled = pullForward(requirements, result);
+    result = rebalanceSprints(requirements, pulled, options);
+    result = restoreMatchingGoals(result, plan);
   }
   return capSprintCount(renumberSprints(result), MAX_SPRINTS);
 }
@@ -178,19 +183,17 @@ export function rebalanceSprints(
 }
 
 /**
- * "must" o mais cedo possível: percorre as sprints em ordem e, enquanto sobra capacidade,
- * puxa de sprints posteriores os requisitos must (depois should) cujas dependências já
- * estão em sprints anteriores ou na própria. Ordem estável: sprint de origem, depois
- * posição. Evita a sprint "só de could" enquanto há must pendente mais adiante.
+ * "must" o mais cedo possível: percorre as sprints em ordem e puxa de sprints posteriores
+ * os requisitos must (depois should) cujas dependências já estão em sprints anteriores ou
+ * na própria. Ordem estável: sprint de origem, depois posição. Evita a sprint "só de could"
+ * enquanto há must pendente mais adiante.
+ *
+ * Não é limitado por capacidade/teto de itens: perder a alocação mais cedo possível (e por
+ * tabela, deixar um requisito sem dependência pendente preso numa sprint tardia só porque a
+ * anterior já estava no teto) é pior do que a sprint ficar temporariamente acima da
+ * capacidade nominal. `auditSprintPlan` (audit-sprint-plan.ts) já avisa quando isso acontece.
  */
-export function pullForward(
-  requirements: Requirement[],
-  plan: SprintPlan,
-  limits: RebalanceLimits | number,
-): SprintPlan {
-  const normalized = normalizeLimits(limits);
-  if (normalized.maxPerSprint === Infinity && normalized.capacityPoints === Infinity) return plan;
-
+export function pullForward(requirements: Requirement[], plan: SprintPlan): SprintPlan {
   const byId = new Map(requirements.map((r) => [r.id, r]));
   const sprints = plan.sprints.map((sprint) => ({ ...sprint, requirementIds: [...sprint.requirementIds] }));
 
@@ -198,16 +201,30 @@ export function pullForward(
     const target = sprints[index]!;
     const settled = new Set(sprints.slice(0, index + 1).flatMap((s) => s.requirementIds));
 
+    // Tarefas de setup (scaffolding/infra/deploy) vão para a frente de tudo o mais, antes até
+    // de outros "must": nada depende delas, raramente têm dependência própria, e são elas que
+    // o time normalmente precisa resolver primeiro para o resto poder rodar.
+    for (let later = index + 1; later < sprints.length; later += 1) {
+      const source = sprints[later]!;
+      for (const id of [...source.requirementIds]) {
+        const requirement = byId.get(id);
+        if (!requirement || !isSetupRequirement(requirement)) continue;
+        if (!requirement.dependencies.every((dep) => settled.has(dep) || !byId.has(dep))) continue;
+        target.requirementIds = [id, ...target.requirementIds];
+        source.requirementIds = source.requirementIds.filter((other) => other !== id);
+        settled.add(id);
+      }
+    }
+
     for (const priority of ['must', 'should'] as const) {
       for (let later = index + 1; later < sprints.length; later += 1) {
         const source = sprints[later]!;
         for (const id of [...source.requirementIds]) {
           const requirement = byId.get(id);
           if (!requirement || requirement.priority !== priority) continue;
+          if (isSetupRequirement(requirement)) continue; // já tratado no passo acima
           if (!requirement.dependencies.every((dep) => settled.has(dep) || !byId.has(dep))) continue;
-          const candidate = [...target.requirementIds, id];
-          if (exceedsLimits(candidate, byId, normalized)) continue;
-          target.requirementIds = candidate;
+          target.requirementIds = [...target.requirementIds, id];
           source.requirementIds = source.requirementIds.filter((other) => other !== id);
           settled.add(id);
         }
@@ -216,6 +233,27 @@ export function pullForward(
   }
 
   return { sprints: sprints.filter((sprint) => sprint.requirementIds.length > 0) };
+}
+
+/**
+ * O pull-forward pode esvaziar uma sprint original (some do array) e o rebalanceamento
+ * recriar uma sprint do zero para acomodar o que transbordou de volta (`appendSprint`, goal
+ * genérico "Sprint N") — mesmo quando o conjunto de requisitos que ela acaba recebendo é
+ * idêntico ao de alguma sprint do plano original. Sem isso, `sprintsWithChangedComposition`
+ * (build-sprint-plan.ts) não pede um goal novo (a composição bate com a original), e a sprint
+ * fica com o texto genérico em vez do goal que a IA já tinha escrito para aquele conjunto.
+ */
+function restoreMatchingGoals(result: SprintPlan, originalPlan: SprintPlan): SprintPlan {
+  const goalByComposition = new Map(
+    originalPlan.sprints.map((sprint) => [[...sprint.requirementIds].sort().join('|'), sprint.goal]),
+  );
+  return {
+    ...result,
+    sprints: result.sprints.map((sprint) => {
+      const goal = goalByComposition.get([...sprint.requirementIds].sort().join('|'));
+      return goal === undefined ? sprint : { ...sprint, goal };
+    }),
+  };
 }
 
 /** Sprints contíguos a partir de 1 (sprints esvaziadas pelo rebalanceamento somem). */
@@ -238,11 +276,15 @@ function pickOverflowCandidate(
   dependentsById: Map<string, string[]>,
   inSprint: Set<string>,
 ): string {
-  let best: { id: string; key: [number, number, number] } | undefined;
+  let best: { id: string; key: [number, number, number, number] } | undefined;
   ids.forEach((id, position) => {
-    const priority = byId.get(id)?.priority ?? 'should';
+    const requirement = byId.get(id);
+    const priority = requirement?.priority ?? 'should';
+    // Tarefa de setup nunca transborda antes de tudo o mais no lote (só se sobrar só setup):
+    // é o componente mais significativo, comparado antes até da prioridade.
+    const setupRank = requirement && isSetupRequirement(requirement) ? 1 : 0;
     const dependentsInSprint = (dependentsById.get(id) ?? []).filter((dep) => inSprint.has(dep)).length;
-    const key: [number, number, number] = [PRIORITY_RANK[priority], dependentsInSprint, -position];
+    const key: [number, number, number, number] = [setupRank, PRIORITY_RANK[priority], dependentsInSprint, -position];
     if (best === undefined || compareKeys(key, best.key) < 0) {
       best = { id, key };
     }
@@ -250,7 +292,7 @@ function pickOverflowCandidate(
   return best!.id;
 }
 
-function compareKeys(a: [number, number, number], b: [number, number, number]): number {
+function compareKeys(a: readonly number[], b: readonly number[]): number {
   for (let i = 0; i < a.length; i += 1) {
     if (a[i] !== b[i]) return a[i]! - b[i]!;
   }

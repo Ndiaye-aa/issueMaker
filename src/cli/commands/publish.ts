@@ -65,6 +65,9 @@ export function registerPublishCommand(program: Command): void {
       for (const skipped of result.skipped) {
         console.log(`${prefix}ignorando (já publicada): ${skipped.title}`);
       }
+      for (const duplicate of result.duplicatesInBatch) {
+        console.log(`${prefix}ignorando (título duplicado no lote): ${duplicate.title}`);
+      }
       for (const created of result.created) {
         const label = created.number ? `#${created.number}` : '(nova)';
         const dependsOn = created.dependsOn.length > 0 ? ` (depende de ${created.dependsOn.join(', ')})` : '';
@@ -74,7 +77,7 @@ export function registerPublishCommand(program: Command): void {
         console.log(`${prefix}milestone concluído e fechado: ${milestone}`);
       }
       console.log(
-        `${prefix}${result.deleted.length} issue(ns) apagada(s) permanentemente, ${result.created.length} issue(ns) criada(s), ${result.skipped.length} ignorada(s), ${result.closedMilestones.length} milestone(s) fechado(s) em ${elapsedSeconds}s`,
+        `${prefix}${result.deleted.length} issue(ns) apagada(s) permanentemente, ${result.created.length} issue(ns) criada(s), ${result.skipped.length} ignorada(s), ${result.duplicatesInBatch.length} duplicada(s) no lote, ${result.closedMilestones.length} milestone(s) fechado(s) em ${elapsedSeconds}s`,
       );
     });
 }

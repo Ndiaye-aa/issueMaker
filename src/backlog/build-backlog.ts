@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { writeFile } from 'node:fs/promises';
+import { ZodError } from 'zod';
 import type { AIClient } from '../ai/provider.js';
 import { buildBacklogBatchRequest, buildBacklogRequest } from '../ai/prompts/backlog.js';
 import { log } from '../cli/logger.js';
@@ -96,6 +97,12 @@ export async function buildBacklogForLayer(
   if (cycle) {
     log.warn(`backlog ${layer}: ciclo de dependências entre requisitos (${cycle.join(' → ')}); o publish vai recusar até ser corrigido em requirements.json.`);
   }
+  const needingReview = items.filter((item) => item.technicalSpecificity?.clarificationNote?.startsWith(MANUAL_REVIEW_NOTE_PREFIX));
+  if (needingReview.length > 0) {
+    log.warn(
+      `backlog ${layer}: ${needingReview.length} item(ns) marcado(s) para revisão manual (geração automática esgotou as tentativas) — ${needingReview.map((item) => item.requirementIds.join(',')).join('; ')}.`,
+    );
+  }
   return BacklogItemArraySchema.parse(items);
 }
 
@@ -139,6 +146,17 @@ export async function buildAndWriteBacklogs(
   return { frontend, backend };
 }
 
+/**
+ * Um lote é independente dos outros (ver comentário em buildBacklogForLayer), mas o
+ * Promise.all de buildAndWriteBacklogs não é: se um lote esgotasse as tentativas de correção
+ * de qualidade e propagasse o erro, TODO o backlog (as duas camadas, todos os outros lotes já
+ * resolvidos) era descartado — nada era escrito em disco. Em vez disso, um lote que falhe
+ * assim vira item(ns) marcados para revisão manual (`needsClarification`), preservando o
+ * resto do backlog. Reexecutar depois (para corrigir o item manualmente ou só tentar de novo)
+ * não reprocessa nem cobra de novo os lotes que já tinham dado certo: `CachedAIClient`
+ * (../ai/cache.ts) só grava em disco respostas que já passaram no schema, então o cache só
+ * tem miss para o lote que falhou.
+ */
 async function runBatch(
   batch: RequirementBatch,
   layer: BacklogLayer,
@@ -148,20 +166,77 @@ async function runBatch(
   log.step(batch.label);
   const exclusiveLayer = layer as Exclude<BacklogLayer, 'shared'>;
 
-  if (batch.requirements.length === 1) {
-    const requirement = batch.requirements[0]!;
-    const request = buildBacklogRequest(exclusiveLayer, requirement, batch.sprint);
-    const draft = await aiClient.complete(request, BacklogItemDraftSchema);
-    return [toBacklogItem(draft, requirement, batch.sprint, layer, requirements)];
-  }
+  try {
+    if (batch.requirements.length === 1) {
+      const requirement = batch.requirements[0]!;
+      const request = buildBacklogRequest(exclusiveLayer, requirement, batch.sprint);
+      const draft = await aiClient.complete(request, BacklogItemDraftSchema);
+      return [toBacklogItem(draft, requirement, batch.sprint, layer, requirements)];
+    }
 
-  const ids = batch.requirements.map((r) => r.id);
-  const request = buildBacklogBatchRequest(exclusiveLayer, batch.requirements, batch.sprint);
-  const drafts = await aiClient.complete(request, BacklogItemBatchDraftSchema(ids));
-  const draftById = new Map<string, BacklogItemBatchDraft>(drafts.map((draft) => [draft.requirementId, draft]));
-  return batch.requirements.map((requirement) =>
-    toBacklogItem(draftById.get(requirement.id)!, requirement, batch.sprint, layer, requirements),
-  );
+    const ids = batch.requirements.map((r) => r.id);
+    const request = buildBacklogBatchRequest(exclusiveLayer, batch.requirements, batch.sprint);
+    const drafts = await aiClient.complete(request, BacklogItemBatchDraftSchema(ids));
+    const draftById = new Map<string, BacklogItemBatchDraft>(drafts.map((draft) => [draft.requirementId, draft]));
+    return batch.requirements.map((requirement) =>
+      toBacklogItem(draftById.get(requirement.id)!, requirement, batch.sprint, layer, requirements),
+    );
+  } catch (error) {
+    log.warn(`${batch.label}: geração falhou após esgotar as tentativas (${summarizeError(error)}); marcando para revisão manual em vez de descartar o restante do backlog.`);
+    return batch.requirements.map((requirement) =>
+      fallbackBacklogItem(requirement, batch.sprint, layer, requirements, error),
+    );
+  }
+}
+
+function summarizeError(error: unknown): string {
+  if (error instanceof ZodError) return error.issues.map((issue) => issue.message).join('; ');
+  return error instanceof Error ? error.message : String(error);
+}
+
+export const MANUAL_REVIEW_NOTE_PREFIX = 'Geração automática falhou';
+
+/**
+ * Item mínimo, válido pelo schema, para um requisito cuja geração por IA esgotou as
+ * tentativas (ver runBatch). `needsClarification: true` já faz o publish marcar a issue com
+ * a label de status correspondente (labelsForItem em publish-backlog.ts), então ela não passa
+ * despercebida — mas o requisito não desaparece do backlog.
+ */
+function fallbackBacklogItem(
+  requirement: Requirement,
+  sprint: Sprint,
+  layer: BacklogLayer,
+  requirements: Requirement[],
+  error: unknown,
+): BacklogItem {
+  const requirementIds = [requirement.id];
+  return {
+    id: '',
+    epic: requirement.sourceSection,
+    type: 'feature',
+    title: `Revisar manualmente: ${requirement.title}`.slice(0, 70),
+    description: `A geração automática deste item esgotou as tentativas de correção de qualidade. Requisito original: ${requirement.description}`.slice(0, 900),
+    expectedBehavior: 'Revisar o requisito original e preencher descrição, comportamento esperado e critérios de aceite manualmente antes de publicar.',
+    acceptanceCriteria: ['Revisão manual concluída antes da publicação desta issue.'],
+    technicalSpecificity: {
+      httpCodes: [],
+      fields: [],
+      limits: null,
+      needsClarification: true,
+      clarificationNote: `${MANUAL_REVIEW_NOTE_PREFIX}: ${summarizeError(error)}`.slice(0, 900),
+    },
+    labels: [],
+    sprint: sprint.number,
+    layer,
+    requirementIds,
+    dependsOn: resolveDependsOn(requirement, requirements),
+    priority: resolvePriority(requirementIds, requirements),
+  };
+}
+
+function resolveDependsOn(requirement: Requirement, requirements: Requirement[]): string[] {
+  const knownIds = new Set(requirements.map((r) => r.id));
+  return [...new Set(requirement.dependencies)].filter((id) => id !== requirement.id && knownIds.has(id));
 }
 
 function toBacklogItem(
@@ -172,10 +247,7 @@ function toBacklogItem(
   requirements: Requirement[],
 ): BacklogItem {
   const requirementIds = [requirement.id];
-  const knownIds = new Set(requirements.map((r) => r.id));
-  const dependsOn = [...new Set(requirement.dependencies)].filter(
-    (id) => id !== requirement.id && knownIds.has(id),
-  );
+  const dependsOn = resolveDependsOn(requirement, requirements);
   const reproSteps = draft.type === 'bug' ? draft.reproSteps : undefined;
   const environment = looksLikeEnvironment(draft.environment) ? draft.environment!.trim() : undefined;
   const spec = draft.technicalSpecificity;

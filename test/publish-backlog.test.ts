@@ -142,7 +142,10 @@ describe('publishBacklog', () => {
 
   it('cria/associa um milestone "Sprint N" por sprint distinto, com objetivo e due date do plano', async () => {
     const publisher = makeMockPublisher();
-    const items = [makeItem({ id: 'BL-001', sprint: 1 }), makeItem({ id: 'BL-002', sprint: 3 })];
+    const items = [
+      makeItem({ id: 'BL-001', sprint: 1 }),
+      makeItem({ id: 'BL-002', sprint: 3, title: 'Adicionar relatório exportável em PDF' }),
+    ];
     const plan: SprintPlan = {
       sprints: [
         { number: 1, goal: 'Login de ponta a ponta', requirementIds: ['REQ-001'], startDate: '2026-09-14', dueDate: '2026-09-27' },
@@ -278,6 +281,38 @@ describe('publishBacklog', () => {
     expect(second.created).toHaveLength(0);
     expect(second.skipped).toEqual([{ title: 'Issue estável', dependsOn: [] }]);
     expect(publisher.createIssue).toHaveBeenCalledTimes(1);
+  });
+
+  it('modo add: dois itens do mesmo lote com título repetido só criam a primeira ocorrência', async () => {
+    const items = [makeItem({ title: 'Issue repetida' }), makeItem({ id: 'BL-002', title: 'Issue repetida' })];
+    const publisher = makeMockPublisher();
+    publisher.listOpenIssuesWithLabel.mockResolvedValue([]);
+    publisher.ensureMilestonesExist.mockResolvedValue(new Map());
+    publisher.createIssue.mockResolvedValue(42);
+
+    const result = await publishBacklog(items, publisher, { mode: 'add', dryRun: false });
+
+    expect(publisher.createIssue).toHaveBeenCalledTimes(1);
+    expect(publisher.createIssue).toHaveBeenCalledWith(items[0], expect.any(Array), undefined, expect.any(Map));
+    expect(result.created).toEqual([{ number: 42, title: 'Issue repetida', dependsOn: [] }]);
+    expect(result.duplicatesInBatch).toEqual([{ title: 'Issue repetida', dependsOn: [] }]);
+    expect(result.skipped).toEqual([]);
+    expect(log.warn).toHaveBeenCalled();
+  });
+
+  it('modo replace: dois itens do mesmo lote com título repetido só criam a primeira ocorrência', async () => {
+    const items = [makeItem({ title: 'Issue repetida' }), makeItem({ id: 'BL-002', title: 'Issue repetida' })];
+    const publisher = makeMockPublisher();
+    publisher.listAllOpenIssues.mockResolvedValue([]);
+    publisher.ensureMilestonesExist.mockResolvedValue(new Map());
+    publisher.createIssue.mockResolvedValue(42);
+
+    const result = await publishBacklog(items, publisher, { mode: 'replace', dryRun: false });
+
+    expect(publisher.createIssue).toHaveBeenCalledTimes(1);
+    expect(result.created).toEqual([{ number: 42, title: 'Issue repetida', dependsOn: [] }]);
+    expect(result.duplicatesInBatch).toEqual([{ title: 'Issue repetida', dependsOn: [] }]);
+    expect(log.warn).toHaveBeenCalled();
   });
 });
 

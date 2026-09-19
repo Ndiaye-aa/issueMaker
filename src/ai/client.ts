@@ -34,7 +34,7 @@ export class ResilientAIClient implements AIClient {
   constructor(
     private readonly primary: AIProvider,
     private readonly fallback: AIProvider | undefined,
-    private readonly maxSchemaRetries = 3,
+    private readonly maxSchemaRetries = 6,
     private readonly maxRateLimitRetries = 8,
     private readonly log: (message: string) => void = console.error,
     concurrency: ConcurrencyOptions = DEFAULT_CONCURRENCY,

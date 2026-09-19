@@ -59,6 +59,8 @@ export interface PublishResult {
   deleted: GithubIssueRef[];
   created: CreatedIssue[];
   skipped: CreatedIssue[];
+  /** Títulos repetidos dentro do próprio lote publicado agora (não é o mesmo caso de `skipped`). */
+  duplicatesInBatch: CreatedIssue[];
   closedMilestones: string[];
 }
 
@@ -94,11 +96,31 @@ export async function publishBacklog(
   options: PublishOptions,
   sprintPlan?: SprintPlan,
 ): Promise<PublishResult> {
-  const result: PublishResult = { deleted: [], created: [], skipped: [], closedMilestones: [] };
+  const result: PublishResult = { deleted: [], created: [], skipped: [], duplicatesInBatch: [], closedMilestones: [] };
 
   // Ordem topológica (ciclo = erro antes de tocar na API): quando um item é criado, as issues
   // das quais depende já existem e o corpo pode citar "#N" numa única passada.
-  const orderedItems = sortTopologically(items);
+  const topologicallyOrdered = sortTopologically(items);
+
+  // Títulos repetidos dentro do próprio lote: mantém a primeira ocorrência e descarta as
+  // seguintes, em vez de criar issues duplicadas no GitHub (independe de add/replace).
+  const seenTitles = new Set<string>();
+  const orderedItems = topologicallyOrdered.filter((item) => {
+    if (seenTitles.has(item.title)) {
+      result.duplicatesInBatch.push({ title: item.title, dependsOn: item.dependsOn });
+      return false;
+    }
+    seenTitles.add(item.title);
+    return true;
+  });
+  if (result.duplicatesInBatch.length > 0) {
+    for (const duplicate of result.duplicatesInBatch) {
+      log.warn(
+        `título duplicado no lote publicado agora: "${duplicate.title}" já apareceu antes neste mesmo lote; ` +
+          'a ocorrência seguinte foi ignorada. Renomeie no backlog para publicar as duas.',
+      );
+    }
+  }
 
   // Números já conhecidos por id de requisito: no modo "add", todas as issues sdd-bot abertas
   // (inclusive de outras camadas publicadas antes); no "replace", nenhuma — são recriadas.

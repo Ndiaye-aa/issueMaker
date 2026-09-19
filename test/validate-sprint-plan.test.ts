@@ -213,7 +213,7 @@ describe('rebalanceSprints (via capacityPoints)', () => {
 });
 
 describe('pullForward', () => {
-  it('puxa "must" de sprints posteriores enquanto sobra capacidade e as dependências permitem', () => {
+  it('puxa "must" de sprints posteriores para a sprint mais cedo possível, mesmo estourando a capacidade nominal, respeitando só as dependências', () => {
     const requirements = [
       { ...makeRequirement('REQ-1', [], 's'), priority: 'could' as const },
       makeRequirement('REQ-2', [], 's'),
@@ -228,11 +228,13 @@ describe('pullForward', () => {
       ],
     };
 
-    const pulled = pullForward(requirements, plan, { capacityPoints: 4 });
+    const pulled = pullForward(requirements, plan);
 
-    // REQ-2 e REQ-4 (must, sem dependência pendente) sobem para a sprint 1; REQ-3 depende de
-    // REQ-4, que agora está na sprint 1, e sobe para a sprint 2 (a 1 já está cheia).
-    expect(pulled.sprints.map((s) => s.requirementIds)).toEqual([['REQ-1', 'REQ-2'], ['REQ-3', 'REQ-4']]);
+    // REQ-2 e REQ-4 (must, sem dependência pendente) sobem para a sprint 1 mesmo sem limite de
+    // capacidade as travar. REQ-3 depende de REQ-4: no momento em que a sprint 1 é processada,
+    // REQ-4 ainda não tinha sido puxado (é resolvido depois, na mesma passada), então REQ-3 só
+    // não avança mais do que a sprint em que já estava (o algoritmo não refaz a passada).
+    expect(pulled.sprints.map((s) => s.requirementIds)).toEqual([['REQ-1', 'REQ-2', 'REQ-4'], ['REQ-3']]);
   });
 
   it('não puxa "must" cuja dependência ainda está em sprint posterior', () => {
@@ -249,11 +251,11 @@ describe('pullForward', () => {
       ],
     };
 
-    const pulled = pullForward(requirements, plan, { capacityPoints: 4 });
+    const pulled = pullForward(requirements, plan);
 
-    // REQ-2 caberia na sprint 1 (2 + 1 pts), mas depende de REQ-3, que só entra na sprint 2
-    // (3 pts não cabem ao lado de REQ-1); então REQ-2 sobe apenas até a sprint 2.
-    expect(pulled.sprints.map((s) => s.requirementIds)).toEqual([['REQ-1'], ['REQ-3', 'REQ-2']]);
+    // REQ-3 (must, sem dependência pendente) sobe para a sprint 1; REQ-2 depende de REQ-3, que
+    // só fica satisfeita a partir da sprint 1, então REQ-2 sobe para a sprint 1 também.
+    expect(pulled.sprints.map((s) => s.requirementIds)).toEqual([['REQ-1', 'REQ-3', 'REQ-2']]);
   });
 
   it('validateAndFixSprintPlan renumera sprints esvaziadas pelo pull-forward', () => {
